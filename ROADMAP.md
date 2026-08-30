@@ -43,7 +43,7 @@ than assumed.
 
 ### 1. Export canonicalisation
 
-**Status: unsolved. Nothing exposes this as a tool.**
+**Status: built — `scripts/canon.py`.** Nothing else exposes this as a tool.
 
 A Zabbix YAML export is not stable enough to diff directly:
 
@@ -60,14 +60,19 @@ available as a primitive. Without it every downstream diff, review and drift
 check is noise, which is the usual reason config-versioning efforts are
 abandoned.
 
-**Intent:** a canonicaliser that takes any export and emits a deterministic form
-— semantic sort keys rather than stringified comparison, defaults stripped
-against a per-version schema, version header normalised, webhook JavaScript
-extracted to sidecar files and re-embedded on import.
+**Built:** `canon.py` emits a deterministic form using semantic sort keys,
+strips empties, and removes the version header. It works in JSON rather than
+YAML, since Zabbix handles both and the standard library parses one of them.
+
+Measured on a template exported from two servers on different patch versions:
+92 changed lines by line diff, 46 real changes semantically, nothing spurious.
+
+Still to do: extracting webhook JavaScript to sidecar files so it is reviewable
+in a diff.
 
 ### 2. Semantic diff and destructive-change gating
 
-**Status: unsolved.**
+**Status: built — `canon.py diff` and `scripts/promote.py`.**
 
 `configuration.importcompare` is not a safe basis for a promotion gate:
 
@@ -83,14 +88,14 @@ This project has already observed the practical consequence: `importcompare`
 reported no changes for a host import that then failed outright because the host
 referenced a proxy absent from the target.
 
-**Intent:** diff canonical form against canonical form, classify changes as
-additive, mutating or destructive, and require explicit approval for destructive
-ones. Deleting a templated item deletes its history; that deserves a prompt, not
-a log line.
+**Built:** the diff classifies every change as additive, mutating or
+destructive, and names which removals lose collected data. `promote.py apply`
+refuses destructive changes without `--allow-destructive`, and re-plans after
+applying to confirm the server converged rather than trusting the import.
 
 ### 3. Template testing
 
-**Status: unsolved. No framework exists.**
+**Status: partly built — `scripts/tmpltest.py`.** No other framework exists.
 
 Nothing lets you assert that a template behaves correctly before it reaches
 production. The available aids are the frontend's item and trigger test buttons,
@@ -102,24 +107,27 @@ which replays recorded `snmpwalk` output through an SNMP simulator against a
 containerised Zabbix. It is a testbed, not a test framework: no assertions, no
 CI harness.
 
-**Intent:** a test gate that imports a template into a disposable instance,
-attaches it to a simulated host, and asserts on the result — all items
-supported, discovery produced the expected prototypes, an injected value moves a
-specific trigger into a problem state.
+**Built:** `tmpltest.py` imports into a disposable instance, links to a
+throwaway host, and asserts that the template imports, links, creates items,
+resolves trigger expressions, and produces discovery prototypes. Pointed at a
+real address it also enables the items and checks none go unsupported.
+
+Still to do: injecting a value to assert a specific trigger fires, and using an
+SNMP simulator so the whole thing runs without real hardware.
 
 ### 4. Promotion pipeline
 
-**Status: no published, reusable implementation.**
+**Status: built — `promote.py` and `.github/workflows/promote.yml`.**
 
 The recommended shape is well documented — export, lint, preview, stage,
 promote — but everyone who has built it has built it privately. ZabbixCI models
 promotion through separate push and pull branches, which is the closest existing
 approach, and it covers templates rather than whole configuration.
 
-**Intent:** a workflow that treats git as the source of truth for templates,
-gates promotion on the diff above, and reconciles in both directions. Production
-gets edited during incidents; a pipeline that only pushes will either overwrite
-that or drift from it permanently.
+**Built:** the workflow plans on a pull request and posts the diff as the job
+summary, blocks destructive changes there, applies on merge, and re-plans to
+confirm convergence. `promote.py drift` runs the comparison in reverse to catch
+a server edited outside git.
 
 ### 5. Configuration outside the export format
 
@@ -136,8 +144,8 @@ most template pipelines quietly stop at templates.
 
 ### 6. SNMP template generation
 
-**Status: badly solved. The canonical tool targets a Zabbix version three major
-releases out of date.**
+**Status: built for the walk-based case — `scripts/walk2tmpl.py`.** Generating
+from a MIB remains unsolved elsewhere.
 
 `mib2zabbix` emits Zabbix 3.x XML. Modern Zabbix wants YAML built around a
 `walk[]` master item with dependent items and preprocessing, which is
@@ -150,8 +158,14 @@ interfaces. Service-layer monitoring — service state, per-queue and policer
 counters, OAM session state, per-VRF routing — is absent across every vendor
 examined, and is exactly what a service provider needs.
 
-**Intent:** treated as a separate project rather than scope for this one. Noted
-here because it is the largest gap found and worth stating plainly.
+**Built:** `walk2tmpl.py` generates a template from an `snmpwalk` capture,
+producing walk master items with dependent items and a discovery rule per table
+rather than one item per OID. Verified end to end against a 24-port switch: 579
+walked OIDs became 7 scalar items, 3 masters and one rule with 22 prototypes,
+and discovery produced items named after the real ports.
+
+Still to do: MIB parsing for readable names beyond the small built-in table, and
+service-layer coverage for carrier equipment.
 
 ### 7. Trap semantics and alarm correlation
 
@@ -178,22 +192,26 @@ ratio of operational value to implementation effort.
 
 ---
 
-## Priority
+## What is left
 
 Ordered by impact, not by ease.
 
-| | Item | Rationale |
+| | Item | Why it matters |
 |---|---|---|
-| 1 | Canonicaliser | Everything else depends on diffs being trustworthy |
-| 2 | Semantic diff with destructive-change gating | Makes a promotion approval reviewable in seconds |
-| 3 | Promotion pipeline, both directions | Closes the loop between git and a production instance that gets edited under pressure |
-| 4 | Out-of-format object serialisation | Removes the reason pipelines stop at templates |
-| 5 | Template test gate | Highest absolute value, largest effort |
-| 6 | Topology-derived trigger dependencies | Best value-to-effort ratio; suppresses alarm storms |
+| 1 | Serialisation for objects outside the export format | Actions, media types, maintenance windows and macros are not in `configuration.export`. This is the reason most template pipelines quietly stop at templates. |
+| 2 | Trigger dependencies from inventory topology | The best ratio of value to effort on this list. It is the difference between one alert and forty when an upstream link fails. |
+| 3 | Webhook JavaScript as sidecar files | Embedded as one quoted string, webhook code is unreviewable in a diff and untestable outside a live server. |
+| 4 | Value injection in the test harness | Asserting that a specific trigger fires on a specific value, and an SNMP simulator so tests run without real hardware. |
+| 5 | MIB-based name resolution | `walk2tmpl.py` names OIDs from a small built-in table; anything else keeps its numeric OID. Readable names need MIB parsing. |
+| 6 | Service-layer templates for carrier equipment | Vendor templates stop at chassis and interfaces. Service state, queue and policer counters, and OAM sessions are absent everywhere. |
 
-Already delivered: inventory reconciliation, bulk problem triage, DNS auditing,
-safety-gated production to test cloning, two-node HA with a floating address,
-and agent rollout.
+Delivered so far: inventory reconciliation, production-readiness auditing and
+remediation, bulk problem triage, DNS auditing, safety-gated production to test
+cloning, export canonicalisation, semantic diff with destructive-change gating,
+a promotion pipeline that plans on review and confirms convergence after
+applying, template testing, SNMP template generation from a device walk,
+two-node HA with a floating address that follows the active node, and agent
+rollout.
 
 ## Explicitly out of scope
 
