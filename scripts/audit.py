@@ -218,10 +218,10 @@ def check_collection(z, f: Findings) -> None:
 # --------------------------------------------------------------------------
 def check_noise(z, f: Findings) -> None:
     triggers = z.call("trigger.get", {"output": ["triggerid", "description", "manual_close"],
-                                      "selectDependencies": "count",
+                                      "selectDependencies": ["triggerid"],
                                       "monitored": True, "limit": 200000})
     if triggers:
-        with_deps = sum(1 for t in triggers if int(t.get("dependencies") or 0) > 0)
+        with_deps = sum(1 for t in triggers if t.get("dependencies"))
         if with_deps == 0:
             f.add("noise", "high",
                   "No trigger dependencies anywhere",
