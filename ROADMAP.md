@@ -180,7 +180,7 @@ ratio of operational value to implementation effort.
 
 ## Priority
 
-Ordered by leverage, not by ease.
+Ordered by impact, not by ease.
 
 | | Item | Rationale |
 |---|---|---|

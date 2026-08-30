@@ -5,6 +5,9 @@ triage, safe promotion from test to production, and high availability.
 
 Standard library only. No dependencies to install, nothing to keep upgraded.
 
+New here? [docs/getting-started.md](docs/getting-started.md) goes from an empty
+directory to a working install, including creating the API tokens.
+
 ## Scope
 
 This is deliberately narrow. The Zabbix ecosystem already has good answers for
@@ -323,8 +326,9 @@ Idempotent: templates match on UUID, so re-importing updates in place. Deletion
 is opt-in behind `--prune`, because `deleteMissing` will remove items added
 through the frontend.
 
-No templates ship here. `templates/*.yaml` is gitignored so that exporting your
-own configuration and publishing it is a deliberate act.
+No templates ship here. `templates/` is gitignored for YAML, JSON and XML, so
+exporting your own configuration and publishing it is a deliberate act rather
+than an accident.
 
 ### Agent rollout
 
@@ -396,6 +400,7 @@ and the operational read side is not.
 | [ha.md](docs/ha.md) | Two-node HA, the floating address, and failover |
 | [auto-registration.md](docs/auto-registration.md) | Zero-touch host onboarding, agentless and agent-based |
 | [postgresql-timescaledb.md](docs/postgresql-timescaledb.md) | Migrating history to PostgreSQL with TimescaleDB |
+| [getting-started.md](docs/getting-started.md) | From nothing to a working install |
 | [runners.md](docs/runners.md) | Scheduling these tools on GitHub or Gitea Actions |
 | [troubleshooting.md](docs/troubleshooting.md) | Failures that cost real time, and their causes |
 

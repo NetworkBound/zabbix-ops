@@ -21,5 +21,9 @@ venv/
 *.bak
 *.orig
 
-# Exported templates describe your own estate — commit deliberately.
+# Exported templates describe your own estate. Both tools that write here are
+# covered: templates.py exports YAML, canon.py exports JSON. Commit deliberately,
+# after reading what is in them.
 templates/*.yaml
+templates/*.json
+templates/*.xml
