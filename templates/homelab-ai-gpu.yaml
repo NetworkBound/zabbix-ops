@@ -1,0 +1,103 @@
+zabbix_export:
+  version: '7.4'
+  template_groups:
+    - uuid: 00f03439f3ea4f338e84f01098d0e4ed
+      name: Homelab/Infrastructure
+  templates:
+    - uuid: 7e02cd1685824c23bc5ef5a34ed4dcfe
+      template: 'Homelab AI GPU'
+      name: 'Homelab AI GPU'
+      description: 'NVIDIA GPU monitoring via nvidia-smi UserParameter'
+      groups:
+        - name: Homelab/Infrastructure
+      items:
+        - uuid: 53f120ea19cf4aa6a7e6ddd31479b72e
+          name: 'GPU: Driver Version'
+          key: nvidia.gpu.driver
+          delay: 3600s
+          value_type: TEXT
+          description: 'NVIDIA driver version.'
+        - uuid: ab178b216cc140a887d8534c317e0315
+          name: 'GPU: Fan Speed'
+          key: nvidia.gpu.fan
+          delay: 60s
+          value_type: FLOAT
+          units: '%'
+          description: 'GPU fan speed %. Requires UserParameter: nvidia.gpu.fan,nvidia-smi --query-gpu=fan.speed --format=csv,noheader'
+        - uuid: a7c3a7d396b540ec9a38806bd52d23c4
+          name: 'GPU: Memory Free'
+          key: nvidia.gpu.mem.free
+          delay: 60s
+          units: MiB
+          description: 'GPU VRAM free. Requires UserParameter: nvidia.gpu.mem.free,nvidia-smi --query-gpu=memory.free --format=csv,noheader'
+        - uuid: cb83b8a4dcc54c2f9907f5d65f960fbf
+          name: 'GPU: Memory Total'
+          key: nvidia.gpu.mem.total
+          delay: 3600s
+          units: MiB
+          description: 'GPU VRAM total. Requires UserParameter: nvidia.gpu.mem.total,nvidia-smi --query-gpu=memory.total --format=csv,noheader'
+        - uuid: 6dff715bbd744ccb98e7861f6d7e4376
+          name: 'GPU: Memory Used'
+          key: nvidia.gpu.mem.used
+          delay: 60s
+          units: MiB
+          description: 'GPU VRAM used. Requires UserParameter: nvidia.gpu.mem.used,nvidia-smi --query-gpu=memory.used --format=csv,noheader'
+        - uuid: 5affb0620cbe4d98b9534bec4a09558e
+          name: 'GPU: Name'
+          key: nvidia.gpu.name
+          delay: 3600s
+          value_type: TEXT
+          description: 'GPU model name. Requires UserParameter: nvidia.gpu.name,nvidia-smi --query-gpu=name --format=csv,noheader'
+        - uuid: 7bb9a619a50441cd84c16b35e6c145e4
+          name: 'GPU: Power Draw'
+          key: nvidia.gpu.power
+          delay: 60s
+          value_type: FLOAT
+          units: W
+          description: 'GPU power draw watts. Requires UserParameter: nvidia.gpu.power,nvidia-smi --query-gpu=power.draw --format=csv,noheader'
+        - uuid: d9590361272c49aa816797555f3a7f54
+          name: 'GPU: Temperature'
+          key: nvidia.gpu.temp
+          delay: 60s
+          value_type: FLOAT
+          units: °C
+          description: 'GPU temperature in Celsius. Requires UserParameter: nvidia.gpu.temp,nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader'
+          triggers:
+            - uuid: 1f3c6374b3264465b86a33fd6fa1c0cf
+              expression: 'last(/Homelab AI GPU/nvidia.gpu.temp)>85'
+              name: 'GPU temperature critical on {HOST.NAME} (>{TRIGGER.VALUE}°C)'
+              priority: HIGH
+              description: 'GPU temp above 85°C — risk of throttling/damage'
+            - uuid: 5e988ee623f5496db9110f6067faf3e0
+              expression: 'last(/Homelab AI GPU/nvidia.gpu.temp)>75'
+              name: 'GPU temperature high on {HOST.NAME}'
+              priority: WARNING
+        - uuid: 3ab46bf0fafd4fa4a162ff49fba4ed7b
+          name: 'GPU: Core Utilization'
+          key: nvidia.gpu.util
+          delay: 60s
+          value_type: FLOAT
+          units: '%'
+          description: 'GPU utilization %. Requires UserParameter: nvidia.gpu.util,nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader'
+          triggers:
+            - uuid: dd54b76215c143dda4af9ddb2497162e
+              expression: 'min(/Homelab AI GPU/nvidia.gpu.util,10m)>95'
+              name: 'GPU utilization high on {HOST.NAME} (>95% for 10min)'
+              priority: WARNING
+        - uuid: 36ba06c203dd40178cc2f55e42173150
+          name: 'Ollama: Service running'
+          key: 'proc.num[ollama]'
+          delay: 60s
+          description: 'Number of ollama processes running'
+          triggers:
+            - uuid: 2662ce90ed1f40c4ab8bbd1a1db8417e
+              expression: 'last(/Homelab AI GPU/proc.num[ollama])=0'
+              name: 'Ollama service not running on {HOST.NAME}'
+              priority: AVERAGE
+              description: 'Ollama AI inference service is down'
+              manual_close: 'YES'
+  triggers:
+    - uuid: f3461e794fab4c55bfc9941cf1dc491c
+      expression: 'last(/Homelab AI GPU/nvidia.gpu.mem.used)/last(/Homelab AI GPU/nvidia.gpu.mem.total)*100>90'
+      name: 'GPU memory nearly full on {HOST.NAME} (>90%)'
+      priority: WARNING
