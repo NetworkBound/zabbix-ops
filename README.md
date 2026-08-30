@@ -77,6 +77,31 @@ Proxmox VE is the inventory source today (`scripts/pve.py`). The comparison
 logic is separate from the source, so another inventory can be added without
 touching it.
 
+### `audit.py` — production readiness
+
+```bash
+./scripts/audit.py
+./scripts/audit.py --only alerting
+./scripts/audit.py --fail-on high      # for a scheduled check
+```
+
+Around twenty checks across six categories, each one present because it has
+gone wrong in a real installation. Read-only.
+
+| Category | Answers |
+|---|---|
+| `alerting` | Would a trigger firing now actually reach a person, and does anything escalate if the first notification is missed? |
+| `suppression` | Is monitoring quietly switched off somewhere — a maintenance window that suppresses nothing, or one that never ends? |
+| `collection` | Is data arriving? Unsupported items, hosts with an unusable interface address. |
+| `noise` | Does the problem list mean anything? Trigger dependencies, week-old problems, untagged hosts. |
+| `security` | Encrypted transport, token expiry, super-admin sprawl. |
+| `capacity` | Proxy version skew, offline proxies, server processes running hot, cache pressure. |
+
+The suppression checks are the ones worth running first. A one-time maintenance
+period whose slot has elapsed still displays as active, so the hosts it names
+are believed to be suppressed while they alert normally — and nothing in the
+frontend indicates this.
+
 ### `clone.py` — a test instance that cannot hurt production
 
 Copies configuration from production into a test instance so templates, triggers
