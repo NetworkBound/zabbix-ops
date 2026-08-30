@@ -196,25 +196,89 @@ The obvious gap: if Zabbix is down, Zabbix cannot tell you.
 - Watch replay lag. A standby hours behind is not a standby, it is a slow
   backup.
 
-## Current state
+---
 
-As of the last check, this estate is **standalone**: one Zabbix server, one
-database, no HA node name set, no replica connected. `wal_level` is already
-`replica` with 10 WAL senders, so the primary side needs no reconfiguration —
-replication can be started without a restart.
+# Two things that will bite you, both found the hard way
 
-The blocker is site B: there is no compute at the second location yet. The
-scripts here are written and validated against the real primary in dry-run, and
-are ready to run once that host exists.
+## 1. Agents and proxies do not behave the same
+
+A Zabbix **agent**'s `Server=` is a comma-separated allowlist. Add every HA node
+address and the agent will answer whichever one is active. Easy.
+
+A Zabbix **proxy** cannot do this. Its `Server` parameter takes exactly one
+address, and `zabbix_proxy` refuses to start otherwise:
+
+```
+ERROR: "Server" configuration parameter must not contain comma
+```
+
+So a proxy is nailed to a single node. When the other node takes over, the proxy
+has nowhere to deliver and **every host behind it goes dark** — on an estate
+where the proxy carries most of the hosts, failover then takes the majority of
+your monitoring with it. That is worse than no HA, because you believe you are
+covered.
+
+The fix is a **floating IP** (`deploy/ha/setup-vip.sh`): keepalived on both
+nodes, with a track script that asks the local `zabbix_server -R ha_status`
+whether *this* node holds the active role. The VIP follows whoever says yes, and
+the proxy points at the VIP.
+
+Do not forget the agents either — a new HA node is an address they have never
+been told about, so every passive check against it fails with "network error"
+until `Server=` is updated. `deploy/ha/update-agent-servers.sh` does that across
+a Proxmox node in one pass.
+
+## 2. `nopreempt` silently breaks the whole design
+
+The first version of the VIP config used `nopreempt`, which felt prudent — it
+stops a recovering node from yanking the address back and causing a flap.
+
+It also stops the *takeover*. On failover the track scripts did exactly the
+right thing (the failed node's priority dropped 150 → 100, the new active node's
+rose 100 → 150), and then nothing happened. keepalived logged both changes and
+left the VIP on the dead node, because `nopreempt` tells a higher-priority
+backup not to take over from an existing master.
+
+The result is the worst of both worlds: Zabbix fails over, the VIP does not, and
+the proxy keeps delivering to a server that is no longer active — while every
+status page says the cluster is healthy.
+
+**Preemption must stay enabled here.** The VIP is not a "primary address with a
+backup", it is a pointer to whoever is active, and it has to be free to move.
+
+---
+
+## Current state (verified 2026-08-30)
+
+Built and failover-tested across the two Proxmox nodes:
 
 ```
 ── Zabbix HA cluster
-   (unnamed — standalone)  active  localhost:10051
-   ! HA is not configured — the server is standalone.
-
-── PostgreSQL replication
-   role: primary
-   wal_level=replica max_wal_senders=10
-   replicas: none connected
-   ! no standby is connected — the database has no replica.
+   zbx-node-a         active    10.0.0.20:10051
+   zbx-node-b         standby   10.0.0.21:10051
+   healthy
 ```
+
+| | |
+|---|---|
+| Node A | The existing Zabbix VM — also holds the PostgreSQL |
+| Node B | A new 2 vCPU / 3 GB container on the second hypervisor, sharing node A's database |
+| VIP | A spare LAN address, keepalived VRID 71, follows the active node |
+| Proxy | points at the VIP, not at either node directly |
+| Agents | 55 updated to list both node addresses |
+
+Both servers are pinned to **7.4.13** and held (`apt-mark hold`). HA nodes must
+run the same version — a newer server against a database the older node still
+reads can trigger a schema upgrade the older one cannot cope with.
+
+**Tested, not assumed.** Stopping node A moved the active role to node B in
+under 10 seconds, the VIP followed, and the proxy reconnected and resumed
+receiving configuration. Failing back returned the cluster to A active / B
+standby with the VIP on A.
+
+### Still to do — cross-site
+
+The database is still a single point of failure: both nodes share the PostgreSQL
+on node A. Losing that host loses monitoring, HA or not. `wal_level` is already
+`replica` with 10 WAL senders and the node now listens on its LAN address, so
+the primary side is ready — the standby just needs somewhere to live.

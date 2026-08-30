@@ -122,9 +122,20 @@ See [test-environment.md](docs/test-environment.md).
 
 Cross-site redundancy therefore needs two mechanisms: Zabbix HA for automatic
 server failover, and PostgreSQL streaming replication for the database. This
-reports on both, and is explicit about which parts are missing. Build scripts
-and the failover runbook are in [`deploy/ha/`](deploy/ha/) and
-[ha.md](docs/ha.md).
+reports on both, and is explicit about which parts are missing.
+
+Two things in [`deploy/ha/`](deploy/ha/) exist because a working HA cluster is
+not enough on its own:
+
+- **`setup-vip.sh`** — a proxy's `Server` parameter takes exactly one address
+  (`zabbix_proxy` refuses to start with a comma in it), so a proxy is nailed to
+  one node and every host behind it goes dark on failover. keepalived moves a
+  VIP to whichever node holds the active role, and the proxy follows it.
+- **`update-agent-servers.sh`** — a new HA node is an address agents have never
+  been told about, so every passive check against it fails until `Server=` is
+  updated fleet-wide.
+
+Full build and failover runbook: [ha.md](docs/ha.md).
 
 ### `zbx.py` — Zabbix 7.x API client
 
