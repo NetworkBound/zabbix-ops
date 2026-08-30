@@ -103,8 +103,9 @@ Enable the action. New agents self-register within about two minutes.
 > permanently. The result is a HIGH "unreachable" alert on a host that is
 > perfectly healthy, and it will not clear no matter what you fix on the guest.
 >
-> Worse, it is invisible in the UI unless you open each host's *Interfaces* tab.
-> Nine hosts on the estate this repo came from sat like that for days.
+> Worse, it is invisible in the UI unless you open each host's *Interfaces* tab,
+> so a host can sit in this state for weeks while the problem list blames the
+> host rather than the registration.
 >
 > Two ways out:
 >

@@ -117,7 +117,7 @@ Scheduling it nightly keeps test honest without anyone remembering to. See
 [runners.md](runners.md) — it needs a self-hosted runner, since both instances
 are on a private network.
 
-## The instance in this estate
+## A reference deployment
 
 | | |
 |---|---|

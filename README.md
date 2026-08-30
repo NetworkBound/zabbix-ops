@@ -1,194 +1,197 @@
-# homelab-zabbix
+# zabbix-ops
 
-Custom tooling for running Zabbix 7.x against a Proxmox homelab.
+Operational tooling for Zabbix 7.x: inventory reconciliation, bulk problem
+triage, safe promotion from test to production, and high availability.
 
-Eight small programs, no dependencies beyond the Python standard library, built
-to answer questions the Zabbix UI answers badly or not at all — starting with
-the one that matters most: **is my monitoring actually monitoring what I think
-it is?**
+Standard library only. No dependencies to install, nothing to keep upgraded.
 
-In production on a two-node estate: 75 monitored hosts, ~13,000 items, ~5,000
-triggers.
+## Scope
+
+This is deliberately narrow. The Zabbix ecosystem already has good answers for
+several problems, and this does not try to replace them:
+
+| Need | Use |
+|---|---|
+| API client library | [`zabbix_utils`](https://github.com/zabbix/python-zabbix-utils) (official) |
+| Host, user and macro administration | [`zabbix-cli`](https://github.com/unioslo/zabbix-cli) |
+| Configuration management | [`community.zabbix`](https://github.com/ansible-collections/community.zabbix) Ansible collection |
+| Template synchronisation with git | [ZabbixCI](https://github.com/retigra/ZabbixCI) |
+| Dashboards and graphing | [grafana-zabbix](https://github.com/grafana/grafana-zabbix) |
+
+What remains poorly served is the **operational read side** — confirming that
+monitoring is actually monitoring what you believe it is — and **safely moving
+configuration between environments**. That is what this covers.
 
 ---
 
-## The tools
+## Tools
 
-### `reconcile.py` — is Zabbix watching the right thing?
+### `reconcile.py` — verify monitoring against reality
 
-Monitoring lies quietly. A guest gets a new address, Zabbix keeps polling the
-old one, and the "unreachable" alert that results is indistinguishable from a
-real outage — so it gets investigated once and ignored thereafter. Meanwhile a
-guest nobody added is not monitored at all, and nothing anywhere says so.
+Monitoring fails quietly. A host is renumbered, Zabbix keeps polling the old
+address, and the resulting "unreachable" alert is indistinguishable from a real
+outage. It gets investigated once, found to be false, and skimmed past every
+time after that. Meanwhile a host nobody added is not monitored at all, and
+nothing reports that either.
 
-This compares the Proxmox inventory against the Zabbix inventory and reports
-five classes of drift:
+This compares an authoritative inventory against Zabbix and reports five classes
+of disagreement.
 
 | Finding | Meaning |
 |---|---|
-| `no_address` | Zabbix host with a `0.0.0.0` or empty interface — nowhere to poll, so every check fails regardless of health |
-| `drift` | Zabbix is polling a different address than Proxmox has for that guest |
-| `unmonitored` | Running guest with no Zabbix host at all |
-| `orphaned` | Enabled Zabbix host with no matching guest |
-| `stopped` | Zabbix host enabled for a guest that is stopped — guaranteed alert noise |
+| `no_address` | Zabbix host with a `0.0.0.0` or empty interface. Nowhere to poll, so every check fails regardless of host health. |
+| `drift` | Zabbix is polling a different address than the inventory holds. |
+| `unmonitored` | Running host absent from Zabbix entirely. |
+| `orphaned` | Enabled Zabbix host with no matching inventory entry. |
+| `stopped` | Host enabled in Zabbix for a system that is powered off. Guaranteed alert noise. |
 
 ```
 ── No usable address (9) — Zabbix has nowhere to poll
-   homelab-dashboard          zabbix=0.0.0.0      proxmox=10.0.0.51
-   ollama                     zabbix=0.0.0.0      proxmox=10.0.0.14
-   …
+   app-01              zabbix=0.0.0.0      inventory=10.0.0.51
+   app-02              zabbix=0.0.0.0      inventory=10.0.0.14
 
-── Address drift (1) — Zabbix is polling an address Proxmox disagrees with
-   homeassistant              CT/VM 102  proxmox=10.0.0.68  zabbix=10.0.0.162  (guest-agent)
+── Address drift (1)
+   gw-01               proxmox=10.0.0.68   zabbix=10.0.0.162   (guest-agent)
 ```
 
-It is careful about what it does *not* claim. A DHCP container, or a VM without
-the guest agent, has no address Proxmox can vouch for — those are reported as
-**unverifiable** rather than silently counted as clean. Interfaces polled by
-name rather than by IP are not compared at all, because comparing a hostname to
-an address is meaningless.
+`no_address` is separated from `drift` deliberately. A `0.0.0.0` interface is not
+two systems disagreeing; it is Zabbix having nowhere to poll at all, which no
+amount of fixing the host will resolve. It is the usual result of an
+auto-registration action that creates hosts without an interface operation, and
+it is invisible in the frontend unless you open each host in turn.
+
+The tool is careful about what it does not claim. A DHCP host, or a virtual
+machine without a guest agent, has no address the inventory can vouch for; those
+are reported as **unverifiable** rather than counted as clean. Interfaces polled
+by hostname are not compared against addresses at all.
 
 ```bash
 ./scripts/reconcile.py
 ./scripts/reconcile.py --only no_address
-./scripts/reconcile.py --exclude-group Homelab/Network Homelab/Infrastructure
+./scripts/reconcile.py --exclude-group Network Infrastructure
 ./scripts/reconcile.py --json | jq .totals
-./scripts/reconcile.py --fail-on no_address drift     # for a scheduled job
+./scripts/reconcile.py --fail-on no_address drift    # for a scheduled check
 ```
 
-Read-only against both APIs.
+Proxmox VE is the inventory source today (`scripts/pve.py`). The comparison
+logic is separate from the source, so another inventory can be added without
+touching it.
+
+### `clone.py` — a test instance that cannot hurt production
+
+Copies configuration from production into a test instance so templates, triggers
+and webhooks can be developed against real data.
+
+A naive copy is dangerous in two specific ways, so both are defaults:
+
+- **It notifies real people.** Production actions and media types arrive still
+  pointing at the real webhook and mail relay. Everything is disabled after
+  import unless you explicitly ask otherwise.
+- **It polls production.** Two options, depending on what you are doing:
+  `--include hosts` alone creates them disabled and polls nothing;
+  `--test-proxy NAME --interval 12h` keeps them enabled behind a dedicated proxy
+  with every interval stretched, so test collects real data rarely and *Execute
+  now* gives you an immediate value while developing.
+
+The destination must carry a global macro `{$ENV}` set to `test`, `dev`,
+`staging`, `lab` or `sandbox`. The tool refuses to write anywhere that does not.
+Production does not carry it, so production cannot be a destination.
+
+See [test-environment.md](docs/test-environment.md).
+
+### `ha.py` — cluster and replication health
+
+> Zabbix native HA runs several servers against **one shared database**. It
+> protects against losing a server, not against losing a site. Two servers with
+> two separate databases is not HA; it is two monitoring systems that both alert
+> you and drift apart.
+
+Cross-site redundancy needs two mechanisms: Zabbix HA for automatic server
+failover, and PostgreSQL streaming replication for the database. This reports on
+both and is explicit about what is missing.
+
+```bash
+./scripts/ha.py
+./scripts/ha.py --require-ha --require-replication
+```
+
+Two things in [`deploy/ha/`](deploy/ha/) exist because a working cluster is not
+sufficient on its own:
+
+- **`setup-vip.sh`** — a proxy's `Server` parameter accepts exactly one address
+  (`zabbix_proxy` refuses to start with a comma in it), so a proxy is pinned to
+  one node and every host behind it stops being monitored on failover.
+  keepalived moves a floating address to whichever node holds the active role.
+- **`update-agent-servers.sh`** — an agent's `Server` is an allowlist, so a new
+  node is an address no agent will answer. Every passive check against it fails
+  until the fleet is updated.
+
+Full build and failover procedure: [ha.md](docs/ha.md).
 
 ### `problems.py` — bulk triage
 
 ```bash
 ./scripts/problems.py list --min-severity 4
 ./scripts/problems.py close --stale 30            # dry run
-./scripts/problems.py close --stale 30 --apply    # do it
+./scripts/problems.py close --stale 30 --apply
 ```
 
-Every `close` is a dry run until `--apply`, because acknowledging problems in
-bulk is easy to get wrong and there is no undo. Problems whose trigger has
-`manual_close` disabled are reported as **skipped** rather than counted as
-closed — Zabbix will not close those, and pretending otherwise hides work.
+Every `close` is a dry run until `--apply`. Problems whose trigger has
+`manual_close` disabled are reported as skipped rather than counted as closed,
+because Zabbix will not close them and reporting otherwise hides work.
 
-### `inventory.py` — export, and audit DNS
+### `inventory.py` — export and DNS audit
 
 ```bash
 ./scripts/inventory.py --csv hosts.csv
 ./scripts/inventory.py --check-dns --only-problems
 ```
 
-The DNS audit answers three questions that quietly rot in every homelab: does
-the monitored name resolve, does it resolve to the address Zabbix is actually
-polling, and does that address reverse-resolve back to the same name.
-
-### `clone.py` — a test instance you can actually break
-
-Clones production configuration into a test Zabbix so you can develop templates,
-triggers and webhooks without a mistake reaching production.
-
-```bash
-./scripts/clone.py --dry-run
-./scripts/clone.py
-```
-
-A naive copy of production is actively dangerous in two specific ways, and both
-are defaults here rather than options:
-
-- **It pages real people.** Production's actions and media types come across
-  still pointing at your real Discord webhook and SMTP relay. Every action and
-  media type is **disabled after import**, always.
-- **It polls production.** Cloning the host list means a second server hammering
-  the same agents. Hosts are **not cloned** unless you ask, and are created
-  **disabled** when you do.
-
-The destination must carry a global macro `{$ENV}` set to `test` (or dev /
-staging / lab / sandbox). `clone.py` refuses to write anywhere that does not —
-production does not carry it, so production cannot be a destination.
-
-See [test-environment.md](docs/test-environment.md).
-
-### `ha.py` — HA cluster and replication health
-
-```bash
-./scripts/ha.py
-./scripts/ha.py --require-ha --require-replication   # for a scheduled check
-```
-
-> Zabbix native HA runs several servers against **one shared database**. It
-> protects you from losing a server, not from losing a site. Two Zabbix servers
-> with two separate databases is not HA — it is two monitoring systems that both
-> alert you.
-
-Cross-site redundancy therefore needs two mechanisms: Zabbix HA for automatic
-server failover, and PostgreSQL streaming replication for the database. This
-reports on both, and is explicit about which parts are missing.
-
-Two things in [`deploy/ha/`](deploy/ha/) exist because a working HA cluster is
-not enough on its own:
-
-- **`setup-vip.sh`** — a proxy's `Server` parameter takes exactly one address
-  (`zabbix_proxy` refuses to start with a comma in it), so a proxy is nailed to
-  one node and every host behind it goes dark on failover. keepalived moves a
-  VIP to whichever node holds the active role, and the proxy follows it.
-- **`update-agent-servers.sh`** — a new HA node is an address agents have never
-  been told about, so every passive check against it fails until `Server=` is
-  updated fleet-wide.
-
-Full build and failover runbook: [ha.md](docs/ha.md).
+Answers three questions that quietly rot in any long-running estate: does the
+monitored name resolve, does it resolve to the address Zabbix is polling, and
+does that address reverse-resolve to the same name.
 
 ### `zbx.py` — Zabbix 7.x API client
 
-Also the shared library the other tools use.
+The shared library the other tools use.
 
-> **Zabbix 7.0 changed API authentication**, and it is the single most common
-> reason a script written against 6.x breaks after an upgrade. The token from
-> `user.login` must now be sent as an `Authorization: Bearer <token>` header.
-> The `auth` field inside the JSON-RPC body is **ignored rather than rejected**,
-> so every call fails with a permission error that never mentions
-> authentication.
-
-```bash
-./scripts/zbx.py     # connectivity check: version, host/item/trigger/problem counts
-```
+> Zabbix 7.0 changed API authentication. The token from `user.login` must now be
+> sent as an `Authorization: Bearer` header. The `auth` field inside the
+> JSON-RPC body is ignored rather than rejected, so scripts written against 6.x
+> fail with a permission error that never mentions authentication.
 
 ### `templates.py` — templates under version control
 
-Template definitions are configuration, and configuration that only exists
-inside a database is configuration you cannot diff, review, or roll back.
-
 ```bash
-./scripts/templates.py export                 # Zabbix -> templates/*.yaml
-./scripts/templates.py import --dry-run       # report changes, write nothing
-./scripts/templates.py import                 # apply
+./scripts/templates.py export
+./scripts/templates.py import --dry-run
+./scripts/templates.py import
 ```
 
-Import is idempotent — templates match on UUID, so re-importing updates in place
-instead of creating `My Template_1`. Deletion is opt-in behind `--prune`, because
-`deleteMissing` will happily remove items you added through the UI.
+Idempotent: templates match on UUID, so re-importing updates in place. Deletion
+is opt-in behind `--prune`, because `deleteMissing` will remove items added
+through the frontend.
 
-No templates ship here; `templates/*.yaml` is gitignored so nobody publishes
-their own estate's configuration by forgetting to look.
+No templates ship here. `templates/*.yaml` is gitignored so that exporting your
+own configuration and publishing it is a deliberate act.
 
-### `install-agent.sh` / `bulk-install-agents.sh` — agent rollout
+### Agent rollout
 
 ```bash
 ZBX_SERVER=10.0.0.20 sudo ./scripts/install-agent.sh
-ZBX_SERVER=10.0.0.20 ./scripts/bulk-install-agents.sh --dry-run   # on the PVE node
-ZBX_SERVER=10.0.0.20 ./scripts/bulk-install-agents.sh
+ZBX_SERVER=10.0.0.20 ./scripts/bulk-install-agents.sh --dry-run
 ```
 
-The bulk script drives `pct exec`, so it needs no SSH keys or credentials inside
-the guests. One container failing never aborts the run; failures are collected
-and reported so you can re-run just those with `--only`.
+The bulk script drives `pct exec` on a Proxmox node, so it needs no credentials
+inside the guests. One failure never aborts the run.
 
 ---
 
 ## Quick start
 
 ```bash
-git clone https://github.com/NetworkBound/homelab-zabbix.git
-cd homelab-zabbix
+git clone https://github.com/NetworkBound/zabbix-ops.git
+cd zabbix-ops
 
 cp .env.example .env
 $EDITOR .env
@@ -198,29 +201,23 @@ python3 scripts/zbx.py          # connectivity
 python3 scripts/reconcile.py    # what is actually wrong
 ```
 
-Python 3.9+. Nothing to `pip install` — the standard library only.
+Python 3.9 or newer. Nothing to install.
 
-Prefer a scoped API token over a password: *Users → API tokens → Create API
-token*, then set `ZBX_TOKEN` and leave `ZBX_USER` / `ZBX_PASS` empty. Give it a
-read-only role unless you intend to import templates or close problems.
+Prefer a scoped API token over a password: *Users → API tokens*, then set
+`ZBX_TOKEN` and leave `ZBX_USER` and `ZBX_PASS` empty. A read-only role is
+sufficient for everything except template import and problem closure.
 
-`reconcile.py` additionally needs a **PVEAuditor** (read-only) Proxmox token —
-see `.env.example`.
+## Scheduled checks
 
-## Running it on a schedule
+Two workflows ship in `.github/workflows/`:
 
-Drift is worth catching every morning, not whenever someone remembers. Two
-workflows ship in `.github/workflows/`:
+- **`ci.yml`** — lint, unit tests and a secret scan. Runs anywhere.
+- **`monitoring-drift.yml`** — live reconciliation. Requires a self-hosted
+  runner, since a hosted runner has no route to a private management network.
 
-- **`ci.yml`** — lint, unit tests and a secret scan. Runs anywhere; touches
-  nothing but the repo.
-- **`monitoring-drift.yml`** — the live reconcile. Needs a **self-hosted**
-  runner, because a hosted one has no route to your private APIs.
-
-Gitea Actions reads `.github/workflows/` too, so the same files work on a
-self-hosted Gitea runner. Setup for both, plus the secrets to configure and
-advice on which findings should fail the build:
-**[docs/runners.md](docs/runners.md)**.
+Gitea Actions reads `.github/workflows/` as well, so the same files serve both.
+Setup, required secrets, and advice on which findings should fail a build:
+[runners.md](docs/runners.md).
 
 ## Tests
 
@@ -228,32 +225,39 @@ advice on which findings should fail the build:
 python3 -m unittest discover -s tests -v
 ```
 
-41 tests, no network and no Zabbix required. The tools deliberately keep their
-comparison logic separate from their I/O so the interesting parts are testable
-anywhere — which is also what lets CI run on a hosted runner.
+41 tests, no network required. Comparison and DNS logic are kept separate from
+I/O so the parts worth testing can be tested anywhere.
+
+## Direction
+
+[ROADMAP.md](ROADMAP.md) records a survey of the existing Zabbix tooling
+ecosystem: what is already well maintained and should not be rebuilt, which gaps
+were confirmed against current repositories, and what this project intends to
+build next. The short version is that configuration management is well served
+and the operational read side is not.
 
 ## Documentation
 
 | | |
 |---|---|
+| [architecture.md](docs/architecture.md) | Collection methods, host grouping, template and severity design |
+| [test-environment.md](docs/test-environment.md) | Cloning production into a test instance safely |
+| [ha.md](docs/ha.md) | Two-node HA, the floating address, and failover |
+| [auto-registration.md](docs/auto-registration.md) | Zero-touch host onboarding, agentless and agent-based |
+| [postgresql-timescaledb.md](docs/postgresql-timescaledb.md) | Migrating history to PostgreSQL with TimescaleDB |
 | [runners.md](docs/runners.md) | Scheduling these tools on GitHub or Gitea Actions |
-| [test-environment.md](docs/test-environment.md) | Cloning prod into a test instance safely |
-| [ha.md](docs/ha.md) | Two-site HA: Zabbix cluster + PostgreSQL replication, and failover |
-| [architecture.md](docs/architecture.md) | How the monitoring is put together, and why |
-| [auto-registration.md](docs/auto-registration.md) | Zero-touch onboarding, agentless and agent-based |
-| [postgresql-timescaledb.md](docs/postgresql-timescaledb.md) | MariaDB → PostgreSQL + TimescaleDB, with the traps |
-| [troubleshooting.md](docs/troubleshooting.md) | Failures that cost real time, and what they actually were |
+| [troubleshooting.md](docs/troubleshooting.md) | Failures that cost real time, and their causes |
 
 ## Security
 
-- No credentials are committed. `.env` is gitignored; `.env.example` holds
+- No credentials are committed. `.env` is gitignored; `.env.example` contains
   placeholders only. CI fails on a private address, a credential-shaped literal,
   a private key, or a tracked `.env`.
 - Everything except `templates.py import`, `problems.py close --apply` and the
-  agent installers is strictly read-only.
-- Template exports contain no macro *values* — a secret macro such as a Proxmox
-  token lives on the host object and never leaves the server.
+  agent installers is read-only.
+- Template exports contain no macro values. A secret macro is stored on the host
+  object and does not leave the server.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

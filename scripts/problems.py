@@ -155,7 +155,7 @@ def main() -> int:
                     help="only problems at least this many days old")
     cl.add_argument("--host", help="substring match on host name")
     cl.add_argument("--eventid", nargs="*", help="explicit event ids")
-    cl.add_argument("--message", default="Closed in bulk via homelab-zabbix",
+    cl.add_argument("--message", default="Closed in bulk via zabbix-ops",
                     help="note recorded against each closed problem")
     cl.add_argument("--apply", action="store_true",
                     help="actually close (without this it is a dry run)")

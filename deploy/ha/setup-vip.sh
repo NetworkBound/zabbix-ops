@@ -92,7 +92,7 @@ TRACK
 chmod 0755 /usr/local/bin/zbx-ha-active
 
 cat > /etc/keepalived/keepalived.conf <<EOF
-# Managed by homelab-zabbix deploy/ha/setup-vip.sh — local edits will be lost.
+# Managed by zabbix-ops deploy/ha/setup-vip.sh — local edits will be lost.
 #
 # The VIP follows the active Zabbix HA node rather than a fixed priority, so it
 # is always where the proxy needs to send data.

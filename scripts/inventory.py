@@ -6,7 +6,7 @@
     ./scripts/inventory.py --check-dns           # forward/reverse DNS audit
 
 The DNS audit is the useful part. It answers three questions that quietly rot in
-every homelab:
+any estate that has been running for a while:
 
   * Does the name Zabbix monitors resolve at all?
   * Does it resolve to the address Zabbix is actually polling?

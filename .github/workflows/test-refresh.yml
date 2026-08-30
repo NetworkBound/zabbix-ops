@@ -98,8 +98,8 @@ jobs:
       - name: Report
         run: python3 scripts/ha.py | tee ha.txt
       - name: Gate
-        # Off until site B exists — the estate is intentionally standalone today,
-        # and a permanently-red job is a job nobody reads. Flip these on once
-        # docs/ha.md has been followed through.
+        # Leave off until an HA cluster and a replica actually exist. A
+        # permanently-red job is a job nobody reads. Enable once docs/ha.md has
+        # been followed through.
         if: ${{ vars.HA_EXPECTED == 'true' }}
         run: python3 scripts/ha.py --require-ha --require-replication

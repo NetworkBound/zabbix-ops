@@ -2,7 +2,7 @@
 
 No resolver and no Zabbix server are contacted — the lookup and transport layers
 are separated from the logic precisely so this can run anywhere, including on a
-hosted CI runner with no route to the homelab.
+hosted CI runner with no route to the monitored network.
 """
 import json
 import pathlib

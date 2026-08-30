@@ -32,7 +32,7 @@ while disconnected.
 | **SNMP** | Switches, APs, UPSes, printers | Cheap, but polling only |
 | **ICMP (fping)** | Anything you can only reach at layer 3 | Trivial |
 
-Prefer **active** agent checks in a homelab. The agent connects outward to
+Prefer **active** agent checks where you can. The agent connects outward to
 `ServerActive`, which means guests on any subnet work without inbound firewall
 rules, and the server does not need a poller slot per check.
 
@@ -124,7 +124,7 @@ On TimescaleDB, dropping expired data is dropping a chunk. See
 
 ## Scaling notes
 
-Numbers from a 75-host, 13k-item estate:
+Figures below are from an estate of roughly 75 hosts and 13,000 items:
 
 - **`StartHTTPPollers`** — the default of 1 saturates as soon as Proxmox LLD is
   producing hundreds of HTTP items. Raising it to 5 cleared a persistent

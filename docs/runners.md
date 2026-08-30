@@ -28,7 +28,7 @@ Register a runner on any host inside the network that can reach both APIs.
 mkdir actions-runner && cd actions-runner
 curl -o actions-runner.tar.gz -L <url-from-that-page>
 tar xzf actions-runner.tar.gz
-./config.sh --url https://github.com/<owner>/homelab-zabbix --token <token>
+./config.sh --url https://github.com/<owner>/zabbix-ops --token <token>
 sudo ./svc.sh install && sudo ./svc.sh start
 ```
 
@@ -58,7 +58,7 @@ ENABLED = true
 act_runner register --no-interactive \
     --instance http://gitea.internal:3000 \
     --token <REG_TOKEN> \
-    --name homelab-runner \
+    --name zabbix-ops-runner \
     --labels ubuntu-latest:docker://node:20-bookworm,host:host
 ```
 
@@ -145,7 +145,7 @@ one. Add a step; the reconcile output is already on disk as JSON:
     import json
     r = json.load(open("reconcile.json"))["totals"]
     print(f"{r[\"no_address\"]} unreachable-by-config, {r[\"drift\"]} drifted")')" \
-         "https://ntfy.example/homelab"
+         "https://ntfy.example/alerts"
 ```
 
 ## Running it by hand first

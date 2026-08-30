@@ -22,10 +22,20 @@ someone's phone buzzes at 3am about a problem that does not exist. So every
 action and every media type is **disabled after import**, always, unless you
 explicitly ask otherwise.
 
-**2. A cloned host list makes test poll production.** Cloning 88 hosts means a
-second Zabbix server starts hammering the same agents, doubling load and
-producing a second, conflicting opinion about whether they are up. Hosts are
-therefore opt-in, and when cloned they are created **disabled**.
+**2. A cloned host list makes test poll production.** Cloning the host list means
+a second Zabbix server starts polling the same agents at production intervals.
+
+There are two ways to handle that, and which you want depends on what you are
+doing:
+
+* ``--include hosts`` alone creates them **disabled**. Nothing is polled. Good
+  when you only care about template structure.
+* ``--test-proxy NAME --interval 12h`` keeps them **enabled** but moves all of
+  them behind a dedicated test proxy and stretches every polling interval. Test
+  collects real data from real devices, just rarely — and when you are actively
+  working on an item you press **Execute now**, which bypasses the interval
+  entirely. Load on production agents becomes negligible, and stopping that one
+  proxy process stops every bit of test polling at once.
 
 Guard rails
 -----------
@@ -45,6 +55,7 @@ import argparse
 import contextlib
 import os
 import pathlib
+import re
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -150,6 +161,28 @@ def export_section(src: Zabbix, section: str, ids: list[str]) -> str | None:
     })
 
 
+#: In an exported host, the proxy reference looks like:
+#:     monitored_by: PROXY
+#:     proxy:
+#:       name: prod-proxy
+_PROXY_REF = re.compile(r"(\n\s+proxy:\n\s+name:\s*)(\S.*)")
+
+
+def repoint_proxy(doc: str, proxy_name: str) -> tuple[str, int]:
+    """Rewrite every proxy reference in an exported host document.
+
+    Hosts export carrying the *name* of whatever proxy monitors them in
+    production. That proxy does not exist in the test instance, and Zabbix
+    rejects the whole import rather than falling back:
+
+        Proxy "prod-proxy" for host "web01" does not exist.
+
+    Rewriting the reference before import puts the hosts straight onto the test
+    proxy, which is where they need to be anyway.
+    """
+    return _PROXY_REF.subn(lambda m: f"{m.group(1)}{proxy_name}", doc)
+
+
 def gather(src: Zabbix, args) -> dict[str, str]:
     """Export each section from the source. Returns section -> YAML."""
     out: dict[str, str] = {}
@@ -178,8 +211,11 @@ def gather(src: Zabbix, args) -> dict[str, str]:
 
     if "hosts" in args.include:
         hosts = src.call("host.get", {"output": ["hostid", "host"]})
-        sections["hosts"] = [h["hostid"] for h in hosts]
-        print(f"  hosts            {len(hosts):>4}  (will be created DISABLED)")
+        # Imported one at a time, like media types — see clone_hosts().
+        out["_host_ids"] = [(h["hostid"], h["host"]) for h in hosts]
+        fate = (f"behind {args.test_proxy}, polling at {args.interval or 'production intervals'}"
+                if args.test_proxy else "created DISABLED")
+        print(f"  hosts            {len(hosts):>4}  ({fate})")
 
     for section in SECTIONS:
         ids = sections.get(section)
@@ -258,6 +294,49 @@ def clone_media_types(src: Zabbix, dst: Zabbix, media: list[tuple[str, str]],
     return ok, failed
 
 
+def clone_hosts(src: Zabbix, dst: Zabbix, hosts: list[tuple[str, str]],
+                test_proxy: str | None, dry_run: bool) -> tuple[int, int, list[str]]:
+    """Copy hosts one at a time, repointing their proxy on the way through.
+
+    Not as a batch, for the same reason media types are not: Zabbix validates
+    the whole document and rejects all of it over one bad entry. A single host
+    carrying a trigger that references an item the destination cannot resolve —
+
+        Incorrect item key "icmppingloss" provided for trigger expression
+
+    — will otherwise cost you all 88. Individually, that host is named and
+    skipped and the rest arrive.
+    """
+    rules = {
+        "host_groups": {"createMissing": True},
+        "template_groups": {"createMissing": True},
+        "templates": {"createMissing": True, "updateExisting": True},
+        "hosts": {"createMissing": True, "updateExisting": True},
+        "items": {"createMissing": True, "updateExisting": True},
+        "triggers": {"createMissing": True, "updateExisting": True},
+        "discoveryRules": {"createMissing": True, "updateExisting": True},
+        "graphs": {"createMissing": True, "updateExisting": True},
+        "valueMaps": {"createMissing": True, "updateExisting": True},
+    }
+    method = "configuration.importcompare" if dry_run else "configuration.import"
+    ok, repointed, failed = 0, 0, []
+    for hid, name in hosts:
+        try:
+            doc = src.call("configuration.export",
+                           {"format": "yaml", "options": {"hosts": [hid]}})
+            if test_proxy:
+                doc, n = repoint_proxy(doc, test_proxy)
+                repointed += n
+            dst.call(method, {"format": "yaml", "rules": rules, "source": doc})
+            ok += 1
+        except ZabbixError as e:
+            msg = str(e)
+            reason = ("trigger references an item the destination lacks"
+                      if "Incorrect item key" in msg else msg[:70])
+            failed.append(f"{name} ({reason})")
+    return ok, repointed, failed
+
+
 def quiesce(dst: Zabbix, keep_notifications: bool) -> None:
     """Disable everything in the destination that could contact the outside world.
 
@@ -293,6 +372,137 @@ def quiesce(dst: Zabbix, keep_notifications: bool) -> None:
     print(f"    media types  {len(live_m):>3} disabled ({len(media)} total)")
 
 
+#: Item types with no polling interval. ``delay`` is 0 for these and the API
+#: rejects an attempt to set one: trapper, SNMP trap, dependent.
+NO_INTERVAL_TYPES = {"2", "17", "18"}
+
+
+def move_hosts_to_proxy(dst: Zabbix, proxy_name: str) -> None:
+    """Point every host in the destination at the test proxy.
+
+    Cloned hosts arrive still referencing whatever proxy production used. That
+    proxy does not exist here, so without this they fall back to being polled by
+    the test server directly — which is exactly the uncontrolled polling of
+    production infrastructure we are trying to avoid.
+
+    Putting them all behind one proxy makes test polling a single on/off switch.
+    """
+    proxies = dst.call("proxy.get", {"output": ["proxyid", "name"],
+                                     "filter": {"name": proxy_name}})
+    if not proxies:
+        print(f"    ! no proxy named {proxy_name!r} in the destination — create it "
+              "first, or hosts will be polled by the test server directly",
+              file=sys.stderr)
+        return
+    pid = proxies[0]["proxyid"]
+
+    hosts = dst.call("host.get", {"output": ["hostid", "host", "monitored_by", "proxyid"]})
+    # Most hosts arrive already pointed here, because the export was rewritten
+    # before import. This catches any that were monitored directly by the server
+    # in production and so carried no proxy reference to rewrite.
+    targets = [h for h in hosts
+               if h["host"] != "Zabbix server"
+               and not (h.get("monitored_by") == "1" and h.get("proxyid") == pid)]
+    if not targets:
+        print(f"    hosts already behind {proxy_name}")
+        return
+
+    moved = 0
+    for i in range(0, len(targets), 100):
+        chunk = targets[i:i + 100]
+        try:
+            dst.call("host.update", [{"hostid": h["hostid"], "monitored_by": 1,
+                                      "proxyid": pid} for h in chunk])
+            moved += len(chunk)
+        except ZabbixError as e:
+            print(f"    ! moving a chunk failed: {e}", file=sys.stderr)
+    print(f"    {moved} host(s) moved behind {proxy_name}")
+
+
+def stretch_intervals(dst: Zabbix, delay: str) -> None:
+    """Slow every pollable interval in the destination right down.
+
+    Test should collect real data from real devices — that is what makes a
+    trigger you write there behave the way it will in production. It just does
+    not need to do so every minute. Stretched to hours, the load a test instance
+    adds to production agents is negligible, and **Execute now** still fetches a
+    value immediately whenever you are actively working on an item.
+
+    Applied to the templates rather than the hosts: host items are inherited, so
+    updating the template updates every copy, and it survives hosts being
+    re-cloned. Item prototypes are included so LLD-discovered items inherit the
+    slow interval too.
+    """
+    tids = [t["templateid"] for t in dst.call("template.get", {"output": ["templateid"]})]
+    total_changed = 0
+    for method, label in (("item", "items"),
+                          ("discoveryrule", "discovery rules"),
+                          ("itemprototype", "item prototypes")):
+        try:
+            objs = dst.call(f"{method}.get", {"templateids": tids,
+                                              "output": ["itemid", "type", "delay"]})
+        except ZabbixError as e:
+            print(f"    ! reading {label} failed: {e}", file=sys.stderr)
+            continue
+
+        targets = [o for o in objs
+                   if o.get("type") not in NO_INTERVAL_TYPES
+                   and o.get("delay") not in ("0", "0s", None)
+                   and o.get("delay") != delay]
+        skipped = len(objs) - len(targets)
+
+        changed, failed = 0, 0
+        for i in range(0, len(targets), 100):
+            chunk = targets[i:i + 100]
+            try:
+                dst.call(f"{method}.update",
+                         [{"itemid": o["itemid"], "delay": delay} for o in chunk])
+                changed += len(chunk)
+            except ZabbixError:
+                # One unhappy object should not lose the batch; retry singly so
+                # the rest still get through and the failures stay countable.
+                for o in chunk:
+                    try:
+                        dst.call(f"{method}.update", {"itemid": o["itemid"], "delay": delay})
+                        changed += 1
+                    except ZabbixError:
+                        failed += 1
+        total_changed += changed
+        note = f", {failed} refused" if failed else ""
+        print(f"    {label:<18} {changed:>5} set to {delay}  "
+              f"({skipped} have no interval{note})")
+
+    # Templates cover inherited items, which is most of them. Items defined
+    # directly on a host inherit nothing and would otherwise keep polling at
+    # production rates — a small number of items, but the ones most likely to be
+    # hitting something every minute.
+    own = [i for i in dst.call("item.get", {"output": ["itemid", "type", "delay", "templateid"],
+                                            "limit": 200000})
+           if i.get("templateid") in ("0", 0, None)
+           and i.get("type") not in NO_INTERVAL_TYPES
+           and i.get("delay") not in ("0", "0s", None)
+           and i.get("delay") != delay]
+    changed = failed = 0
+    for i in range(0, len(own), 100):
+        chunk = own[i:i + 100]
+        try:
+            dst.call("item.update", [{"itemid": o["itemid"], "delay": delay} for o in chunk])
+            changed += len(chunk)
+        except ZabbixError:
+            for o in chunk:
+                try:
+                    dst.call("item.update", {"itemid": o["itemid"], "delay": delay})
+                    changed += 1
+                except ZabbixError:
+                    failed += 1
+    total_changed += changed
+    print(f"    {'host-level items':<18} {changed:>5} set to {delay}"
+          f"{f'  ({failed} refused)' if failed else ''}")
+
+    print(f"    {total_changed} object(s) now poll every {delay}. "
+          "Use Execute now for an immediate check.")
+
+
 def disable_cloned_hosts(dst: Zabbix) -> None:
     """Every host in the destination goes to 'not monitored'.
 
@@ -322,6 +532,14 @@ def main() -> int:
                     help="DESTRUCTIVE: delete items/triggers in test that prod no longer has")
     ap.add_argument("--keep-notifications", action="store_true",
                     help="DANGEROUS: leave actions and media types enabled in the destination")
+    ap.add_argument("--test-proxy", metavar="NAME",
+                    help="move every cloned host behind this proxy in the destination; "
+                         "hosts stay enabled, and stopping that one proxy stops all "
+                         "test polling")
+    ap.add_argument("--interval", metavar="DELAY",
+                    help="stretch every pollable interval in the destination to this "
+                         "value, e.g. 12h. Use Execute now for immediate checks while "
+                         "developing.")
     ap.add_argument("--force", action="store_true",
                     help="override the {$ENV} safety check")
     args = ap.parse_args()
@@ -336,6 +554,15 @@ def main() -> int:
 
     check_safety(src, dst, args.force)
 
+    if args.test_proxy and not dst.call("proxy.get", {"output": ["proxyid"],
+                                                      "filter": {"name": args.test_proxy}}):
+        sys.stdout.flush()
+        print(f"\nerror: no proxy named {args.test_proxy!r} in the destination.",
+              file=sys.stderr)
+        print("       Create it first — hosts reference it by name and the "
+              "import fails as a\n       whole if it is missing.", file=sys.stderr)
+        return 2
+
     print("\nExporting from source (read-only):")
     docs = gather(src, args)
     if not docs:
@@ -348,6 +575,17 @@ def main() -> int:
         if section in docs and not import_section(dst, section, docs[section],
                                                   args.mirror, args.dry_run):
             failures += 1
+
+    hosts = docs.pop("_host_ids", [])
+    if hosts:
+        ok, repointed, failed = clone_hosts(src, dst, hosts, args.test_proxy, args.dry_run)
+        print(f"    {'hosts':<18} {ok}/{len(hosts)} "
+              f"{'comparable' if args.dry_run else 'imported'}"
+              f"{f', {repointed} proxy refs -> {args.test_proxy}' if args.test_proxy else ''}")
+        for f in failed[:10]:
+            print(f"      skipped: {f}")
+        if len(failed) > 10:
+            print(f"      … and {len(failed) - 10} more")
 
     media = docs.pop("_media_ids", [])
     if media:
@@ -367,12 +605,24 @@ def main() -> int:
         return 1 if failures else 0
 
     quiesce(dst, args.keep_notifications)
-    if "hosts" in args.include:
+
+    if args.test_proxy:
+        print(f"\n  Containing test polling behind proxy {args.test_proxy!r}:")
+        move_hosts_to_proxy(dst, args.test_proxy)
+    elif "hosts" in args.include:
+        # No proxy to contain them, so the only safe thing is to not poll at all.
         disable_cloned_hosts(dst)
+
+    if args.interval:
+        print(f"\n  Stretching polling intervals to {args.interval}:")
+        stretch_intervals(dst, args.interval)
 
     print("\nClone complete.")
     print("  Actions and media types are DISABLED in test. Enable individual ones "
           "deliberately,\n  after pointing them somewhere that is not a production endpoint.")
+    if args.test_proxy:
+        print(f"\n  All test polling runs through {args.test_proxy!r}. To stop it dead:"
+              "\n      systemctl stop zabbix-proxy   (on the test proxy host)")
     return 1 if failures else 0
 
 

@@ -77,7 +77,7 @@ echo "==> Writing ${CONF}"
 [[ -f "${CONF}" && ! -f "${CONF}.orig" ]] && cp "${CONF}" "${CONF}.orig"
 
 cat > "${CONF}" <<EOF
-# Managed by homelab-zabbix/scripts/install-agent.sh — local edits will be lost.
+# Managed by zabbix-ops/scripts/install-agent.sh — local edits will be lost.
 PidFile=/run/zabbix/zabbix_agent2.pid
 LogFile=/var/log/zabbix/zabbix_agent2.log
 LogFileSize=10
