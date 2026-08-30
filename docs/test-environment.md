@@ -121,14 +121,19 @@ are on a private network.
 
 | | |
 |---|---|
-| Host | CT 158 `zabbix-test` on the `networkbound` Proxmox node |
-| Frontend | `http://<ct-ip>:8080/` |
-| Version | Zabbix 7.4.14 on PostgreSQL 15 |
+| Host | An unprivileged LXC container, 2 vCPU / 4 GB / 20 GB |
+| Stack | Zabbix server, PostgreSQL, nginx frontend, and a Zabbix proxy, all in the one container |
 | Marker | `{$ENV} = test` |
-| Credentials | `/root/.zabbix-test.env` inside the container, mode 0600 |
+| Credentials | An `0600` environment file inside the container, never in a repository |
 
-It runs `onboot`, has no history to speak of, and is safe to break. If you
-destroy it, rebuild and re-clone — nothing in it is precious by design.
+Sizing assumes configuration only. The instance holds no meaningful history, so
+it needs no room for one. Set it to start on boot, and treat it as disposable:
+if you break it, rebuild and re-clone. Nothing in it is precious by design.
+
+Running the test proxy inside the same container is deliberate. It keeps the
+whole test environment to one host, and it makes stopping all test polling a
+single `systemctl stop`. Give the proxy its own `ListenPort` — the server is
+already using 10051 and the proxy will not start alongside it otherwise.
 
 > One gotcha from building it: loading the schema as the `postgres` superuser
 > leaves every table owned by `postgres`, and the `zabbix` role cannot read
