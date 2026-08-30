@@ -2,10 +2,10 @@
 
 Custom tooling for running Zabbix 7.x against a Proxmox homelab.
 
-Six small programs, no dependencies beyond the Python standard library, built to
-answer questions the Zabbix UI answers badly or not at all — starting with the
-one that matters most: **is my monitoring actually monitoring what I think it
-is?**
+Eight small programs, no dependencies beyond the Python standard library, built
+to answer questions the Zabbix UI answers badly or not at all — starting with
+the one that matters most: **is my monitoring actually monitoring what I think
+it is?**
 
 In production on a two-node estate: 75 monitored hosts, ~13,000 items, ~5,000
 triggers.
@@ -81,6 +81,50 @@ closed — Zabbix will not close those, and pretending otherwise hides work.
 The DNS audit answers three questions that quietly rot in every homelab: does
 the monitored name resolve, does it resolve to the address Zabbix is actually
 polling, and does that address reverse-resolve back to the same name.
+
+### `clone.py` — a test instance you can actually break
+
+Clones production configuration into a test Zabbix so you can develop templates,
+triggers and webhooks without a mistake reaching production.
+
+```bash
+./scripts/clone.py --dry-run
+./scripts/clone.py
+```
+
+A naive copy of production is actively dangerous in two specific ways, and both
+are defaults here rather than options:
+
+- **It pages real people.** Production's actions and media types come across
+  still pointing at your real Discord webhook and SMTP relay. Every action and
+  media type is **disabled after import**, always.
+- **It polls production.** Cloning the host list means a second server hammering
+  the same agents. Hosts are **not cloned** unless you ask, and are created
+  **disabled** when you do.
+
+The destination must carry a global macro `{$ENV}` set to `test` (or dev /
+staging / lab / sandbox). `clone.py` refuses to write anywhere that does not —
+production does not carry it, so production cannot be a destination.
+
+See [test-environment.md](docs/test-environment.md).
+
+### `ha.py` — HA cluster and replication health
+
+```bash
+./scripts/ha.py
+./scripts/ha.py --require-ha --require-replication   # for a scheduled check
+```
+
+> Zabbix native HA runs several servers against **one shared database**. It
+> protects you from losing a server, not from losing a site. Two Zabbix servers
+> with two separate databases is not HA — it is two monitoring systems that both
+> alert you.
+
+Cross-site redundancy therefore needs two mechanisms: Zabbix HA for automatic
+server failover, and PostgreSQL streaming replication for the database. This
+reports on both, and is explicit about which parts are missing. Build scripts
+and the failover runbook are in [`deploy/ha/`](deploy/ha/) and
+[ha.md](docs/ha.md).
 
 ### `zbx.py` — Zabbix 7.x API client
 
@@ -182,6 +226,8 @@ anywhere — which is also what lets CI run on a hosted runner.
 | | |
 |---|---|
 | [runners.md](docs/runners.md) | Scheduling these tools on GitHub or Gitea Actions |
+| [test-environment.md](docs/test-environment.md) | Cloning prod into a test instance safely |
+| [ha.md](docs/ha.md) | Two-site HA: Zabbix cluster + PostgreSQL replication, and failover |
 | [architecture.md](docs/architecture.md) | How the monitoring is put together, and why |
 | [auto-registration.md](docs/auto-registration.md) | Zero-touch onboarding, agentless and agent-based |
 | [postgresql-timescaledb.md](docs/postgresql-timescaledb.md) | MariaDB → PostgreSQL + TimescaleDB, with the traps |

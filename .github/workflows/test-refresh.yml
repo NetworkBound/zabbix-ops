@@ -1,0 +1,105 @@
+# Keep the test instance in step with production, and prove HA/replication health.
+#
+# Self-hosted only: both Zabbix instances and the database are on a private
+# network that a hosted runner cannot reach. See docs/runners.md.
+name: Test refresh + HA check
+
+on:
+  schedule:
+    - cron: "40 3 * * *"          # nightly, before the drift check
+  workflow_dispatch:
+    inputs:
+      mirror:
+        description: "Delete objects in test that prod no longer has"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    name: Clone prod -> test
+    runs-on: ${{ vars.SELF_HOSTED_LABEL || 'self-hosted' }}
+    timeout-minutes: 30
+    env:
+      ZBX_URL: ${{ secrets.ZBX_URL }}
+      ZBX_TOKEN: ${{ secrets.ZBX_TOKEN }}
+      ZBX_TEST_URL: ${{ secrets.ZBX_TEST_URL }}
+      ZBX_TEST_TOKEN: ${{ secrets.ZBX_TEST_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check configuration is present
+        run: |
+          set -eu
+          missing=""
+          [ -n "${ZBX_URL:-}" ]        || missing="$missing ZBX_URL"
+          [ -n "${ZBX_TOKEN:-}" ]      || missing="$missing ZBX_TOKEN"
+          [ -n "${ZBX_TEST_URL:-}" ]   || missing="$missing ZBX_TEST_URL"
+          [ -n "${ZBX_TEST_TOKEN:-}" ] || missing="$missing ZBX_TEST_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing secrets:$missing"; exit 1
+          fi
+
+      - name: Dry run
+        run: python3 scripts/clone.py --dry-run | tee clone-plan.txt
+
+      - name: Clone
+        run: |
+          python3 scripts/clone.py ${{ inputs.mirror && '--mirror' || '' }} \
+            | tee clone.txt
+
+      - name: Assert test cannot notify anyone
+        # The clone disables actions and media types. If anything is enabled
+        # afterwards, the safety net did not hold and test can page real people.
+        run: |
+          python3 - <<'PY'
+          import os, sys
+          sys.path.insert(0, "scripts")
+          from zbx import Zabbix
+          t = Zabbix(url=os.environ["ZBX_TEST_URL"], token=os.environ["ZBX_TEST_TOKEN"])
+          acts = [a for a in t.call("action.get", {"output": ["name","status"]}) if a["status"] == "0"]
+          med  = [m for m in t.call("mediatype.get", {"output": ["name","status"]}) if m["status"] == "0"]
+          hosts= [h for h in t.call("host.get", {"output": ["host","status"]}) if h["status"] == "0"]
+          for label, items in (("actions", acts), ("media types", med)):
+              if items:
+                  print(f"::error::{len(items)} {label} are ENABLED in test: "
+                        + ", ".join(i.get("name","?") for i in items[:5]))
+          # Its own "Zabbix server" host is expected and harmless.
+          extra = [h for h in hosts if h["host"] != "Zabbix server"]
+          if extra:
+              print(f"::warning::{len(extra)} hosts are monitored in test — "
+                    "test may be polling production infrastructure")
+          sys.exit(1 if acts or med else 0)
+          PY
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clone-report
+          path: |
+            clone-plan.txt
+            clone.txt
+          retention-days: 14
+          if-no-files-found: warn
+
+  ha:
+    name: HA + replication health
+    runs-on: ${{ vars.SELF_HOSTED_LABEL || 'self-hosted' }}
+    timeout-minutes: 10
+    env:
+      ZBX_URL: ${{ secrets.ZBX_URL }}
+      ZBX_TOKEN: ${{ secrets.ZBX_TOKEN }}
+      PGDSN: ${{ secrets.PGDSN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report
+        run: python3 scripts/ha.py | tee ha.txt
+      - name: Gate
+        # Off until site B exists — the estate is intentionally standalone today,
+        # and a permanently-red job is a job nobody reads. Flip these on once
+        # docs/ha.md has been followed through.
+        if: ${{ vars.HA_EXPECTED == 'true' }}
+        run: python3 scripts/ha.py --require-ha --require-replication
