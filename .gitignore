@@ -20,3 +20,6 @@ venv/
 
 *.bak
 *.orig
+
+# Exported templates describe your own estate — commit deliberately.
+templates/*.yaml

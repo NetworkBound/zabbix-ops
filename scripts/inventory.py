@@ -57,6 +57,27 @@ def collect(z):
     return rows
 
 
+def dns_findings(name, addr, resolved, ptr):
+    """Compare what DNS says against what Zabbix polls. Pure — no lookups here,
+    so it is testable without a resolver.
+
+    ``resolved`` is the list of A records for ``name`` (empty means NXDOMAIN),
+    ``ptr`` is the reverse name for ``addr`` (empty means no PTR).
+    Returns a list of human-readable findings; empty means healthy.
+    """
+    problems = []
+    if not resolved:
+        problems.append("name does not resolve")
+    elif addr not in resolved:
+        problems.append(f"resolves to {','.join(resolved)}, Zabbix polls {addr}")
+
+    if not ptr:
+        problems.append("no PTR")
+    elif not ptr.lower().startswith(name.lower().split(".")[0]):
+        problems.append(f"PTR is {ptr}")
+    return problems
+
+
 def audit_dns(rows):
     """Annotate each row with forward/reverse DNS findings."""
     for r in rows:
@@ -83,15 +104,8 @@ def audit_dns(rows):
         except (socket.herror, socket.gaierror, OSError):
             r["dns_reverse"] = "none"
 
-        problems = []
-        if r["dns_forward"] == "NXDOMAIN":
-            problems.append("name does not resolve")
-        elif resolved and addr not in resolved:
-            problems.append(f"resolves to {r['dns_forward']}, Zabbix polls {addr}")
-        if r["dns_reverse"] == "none":
-            problems.append("no PTR")
-        elif not r["dns_reverse"].lower().startswith(name.lower().split(".")[0]):
-            problems.append(f"PTR is {r['dns_reverse']}")
+        ptr = "" if r["dns_reverse"] == "none" else r["dns_reverse"]
+        problems = dns_findings(name, addr, resolved, ptr)
         r["dns_status"] = "; ".join(problems) if problems else "ok"
     return rows
 

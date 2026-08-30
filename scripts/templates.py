@@ -1,19 +1,35 @@
 #!/usr/bin/env python3
-"""Import and export the Homelab templates.
+"""Put your Zabbix templates under version control, and put them back.
 
     ./scripts/templates.py export                 # Zabbix -> templates/*.yaml
+    ./scripts/templates.py export --prefix Linux  # only templates matching a name
     ./scripts/templates.py import                 # templates/*.yaml -> Zabbix
-    ./scripts/templates.py import --dry-run       # validate without writing
-    ./scripts/templates.py import templates/homelab-vm.yaml
+    ./scripts/templates.py import --dry-run       # report changes, write nothing
+    ./scripts/templates.py import templates/my-template.yaml
 
-Import is idempotent: templates are matched by UUID, so re-importing updates in
-place rather than creating duplicates. Existing items and triggers that are no
-longer in the file are *not* deleted by default — pass ``--prune`` to allow
-that, which is the destructive option and is off deliberately.
+Template definitions are configuration, and configuration that only exists
+inside a database is configuration you cannot diff, review, or roll back. This
+exports yours to YAML so `git diff` shows exactly which item interval someone
+changed, and imports them back to promote a change or rebuild a server.
+
+No templates ship with this repo — the output directory is gitignored by
+default so nobody accidentally publishes their own estate's configuration.
+Commit yours deliberately, once you have checked what is in them.
+
+Import is idempotent: templates match by UUID, so re-importing updates in place
+rather than creating duplicates. Items and triggers that are no longer in the
+file are *not* deleted by default — ``--prune`` allows that, and is off
+deliberately because ``deleteMissing`` will happily remove anything added
+through the UI.
+
+> Exports contain no macro *values*. A secret macro such as a Proxmox API token
+> is stored on the host object and never appears in a template export — but
+> check your own diff before committing regardless.
 """
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import sys
 
@@ -21,7 +37,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from zbx import ZabbixError, connect_or_exit  # noqa: E402
 
 TEMPLATE_DIR = pathlib.Path(__file__).resolve().parent.parent / "templates"
-SEARCH_PREFIX = "Homelab"
+SEARCH_PREFIX = os.environ.get("ZBX_TEMPLATE_PREFIX", "Homelab")
 
 
 def do_export(z, args) -> int:

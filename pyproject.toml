@@ -1,0 +1,31 @@
+# Tooling config only — the scripts have no runtime dependencies and are run
+# directly, not installed as a package.
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+extend-exclude = [".venv", "venv"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "W",    # pycodestyle warnings
+    "I",    # import sorting
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "C4",   # comprehensions
+    "SIM",  # simplify
+]
+ignore = [
+    "E501",    # line length is enforced by the formatter, not the linter
+    "UP007",   # X | Y unions need 3.10; this targets 3.9
+    "UP045",
+    "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The scripts add scripts/ to sys.path before importing siblings, so their
+# imports legitimately are not at the top of the file.
+"scripts/*.py" = ["E402"]
+"tests/*.py" = ["E402"]

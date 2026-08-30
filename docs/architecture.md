@@ -57,22 +57,30 @@ ignore the alert you actually care about.
 
 ## Template design
 
-Three principles, all learned by getting them wrong first.
+The templates themselves are no longer bundled here — `templates.py` exports
+yours instead. But the design principles are the reason the tooling looks the
+way it does, and they are worth stating.
+
+Three of them, all learned by getting them wrong first.
 
 **1. Interval by volatility, not by habit.** CPU at 60s, memory at 60s, disk at
 5m, kernel max-fds at 1h. An item polled ten times more often than its value
 changes is pure history volume.
 
 **2. Trends over history.** History is per-sample and expensive; trends are
-hourly min/avg/max and cheap. Most items keep 30d history and 365d trends. For
-items you only ever look at as a current value, set `trends: 0` and skip the
+hourly min/avg/max and cheap. Most items want 30d history and 365d trends. For
+items you only ever read as a current value, set `trends: 0` and skip the
 aggregation entirely.
 
 **3. A trigger must imply an action.** If nobody would do anything about it, it
 is a graph, not a trigger. This is the discipline that keeps the problem list
-short enough to read.
+short enough to actually read — and a problem list nobody reads is the failure
+mode that makes the whole system decorative.
 
 ### Severity convention
+
+Consistency matters more than the exact thresholds. The point is that sorting by
+severity produces a genuine work queue:
 
 | Severity | Means | Example |
 |---|---|---|
@@ -82,15 +90,24 @@ short enough to read.
 | `WARNING` | Attention within days | Disk > 80%, latency > 150 ms |
 | `INFO` | Record only | Configuration change detected |
 
-Consistency matters more than the exact thresholds — the point is that sorting
-by severity produces a genuine work queue.
-
 ### `manual_close`
 
 Set `manual_close: YES` on triggers whose recovery expression may never fire —
 anything `nodata`-based on a host that might be decommissioned rather than
-fixed. Without it the problem is permanent and you cannot clear it from the UI.
-`scripts/problems.py` reports these separately for exactly this reason.
+fixed. Without it the problem is permanent and cannot be cleared from the UI.
+`problems.py` reports these separately for exactly that reason.
+
+### Why `no_address` is its own finding
+
+A host with a `0.0.0.0` interface produces exactly the same symptom as a host
+that is genuinely down: `nodata` fires, the trigger goes HIGH, and the problem
+list fills up. The difference is that no amount of fixing the guest will clear
+it.
+
+This is common enough to deserve its own category in `reconcile.py`. It is what
+auto-registration produces when the action creates a host without an interface
+operation, and it is invisible in the Zabbix UI unless you go looking at each
+host's interface tab.
 
 ## Data retention
 

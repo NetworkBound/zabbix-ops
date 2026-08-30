@@ -64,7 +64,28 @@ Availability reflects the **passive** interface. An agent doing only active
 checks reports data while its interface stays grey.
 
 Either add a passive check, or accept grey and alert on `nodata()` against a
-real item instead — which is what the templates here do.
+real item instead. Note that a permanently-grey interface is often the
+`0.0.0.0` case below rather than an active-checks-only design.
+
+### HIGH "unreachable" on a host that is demonstrably up
+
+Check the host's interface address before anything else:
+
+```bash
+./scripts/reconcile.py --only no_address
+./scripts/reconcile.py --only drift
+```
+
+Two causes, both of which look exactly like an outage:
+
+* **The interface is `0.0.0.0`.** The host was registered without a real
+  address — see [auto-registration.md](auto-registration.md). Nothing you do to
+  the guest will clear the alert.
+* **The address is stale.** The guest was renumbered and Zabbix still has the
+  old one. `reconcile.py` compares against what Proxmox actually has.
+
+The tell for both is that the service itself answers fine on its own port while
+Zabbix insists the host is down.
 
 ### Agent runs, but the server gets nothing
 

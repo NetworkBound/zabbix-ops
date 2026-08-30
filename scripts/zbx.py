@@ -56,7 +56,7 @@ class Zabbix:
             self.token = self._login(user, password)
 
     @classmethod
-    def from_env(cls) -> "Zabbix":
+    def from_env(cls) -> Zabbix:
         return cls(
             url=os.environ.get("ZBX_URL", "").strip(),
             user=os.environ.get("ZBX_USER", "").strip(),

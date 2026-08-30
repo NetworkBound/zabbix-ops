@@ -89,9 +89,34 @@ HostMetadata=Linux
 | **Condition** | Host metadata `contains` `Linux` |
 | **Operation 1** | Add host |
 | **Operation 2** | Add to host group `Homelab/Containers` |
-| **Operation 3** | Link template `Homelab LXC Container` |
+| **Operation 3** | Link template — e.g. your LXC container template |
 
 Enable the action. New agents self-register within about two minutes.
+
+> [!warning]
+> **This is where `0.0.0.0` hosts come from.** An agent doing only *active*
+> checks connects outward, so Zabbix has no address to record and creates the
+> host with a `0.0.0.0` agent interface.
+>
+> Active checks keep working — the agent is pushing. But anything passive, and
+> critically any `nodata()` trigger evaluated against a passive item, fails
+> permanently. The result is a HIGH "unreachable" alert on a host that is
+> perfectly healthy, and it will not clear no matter what you fix on the guest.
+>
+> Worse, it is invisible in the UI unless you open each host's *Interfaces* tab.
+> Nine hosts on the estate this repo came from sat like that for days.
+>
+> Two ways out:
+>
+> * Have the agent send its address, so registration records a real interface:
+>   `HostInterface=<the guest's IP>` in `zabbix_agent2.conf` (Zabbix 5.0+), or
+> * Audit for it. `reconcile.py` reports every host with an unroutable interface
+>   under `no_address`, cross-referenced against what Proxmox says the address
+>   should be:
+>
+>   ```bash
+>   ./scripts/reconcile.py --only no_address
+>   ```
 
 Add a second action with a narrower condition ahead of it to special-case a
 class of guest — Zabbix evaluates actions in order, so put the specific ones

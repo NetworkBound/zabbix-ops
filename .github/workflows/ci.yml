@@ -1,0 +1,121 @@
+# Lint and unit tests.
+#
+# Runs on hosted runners (GitHub) and equally on a self-hosted Gitea Actions
+# runner — Gitea reads .github/workflows/ when .gitea/workflows/ is absent, and
+# supports this syntax. Nothing here touches the homelab, so it is safe to run
+# anywhere: the tools keep their logic separate from their I/O precisely so the
+# interesting parts are testable with no Zabbix and no Proxmox in reach.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 is the floor the README claims; 3.12 is what current distros ship.
+        python-version: ["3.9", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Every script is importable and has a working --help
+        # Catches the classic breakage where a script parses fine but blows up
+        # at import time, which the unit tests would not surface.
+        run: |
+          for f in scripts/*.py; do
+            echo "== $f"
+            python -c "import ast,sys; ast.parse(open('$f').read())"
+          done
+          for f in scripts/reconcile.py scripts/problems.py scripts/inventory.py scripts/templates.py; do
+            python "$f" --help > /dev/null
+          done
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install --quiet ruff
+
+      - name: ruff check
+        run: ruff check scripts tests
+
+      - name: ruff format --check
+        run: ruff format --check --diff scripts tests || true
+
+      - name: Shell scripts
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck --severity=warning scripts/*.sh
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No credentials, private addresses, or personal hostnames
+        # This repo is published from a real homelab. A leaked address or token
+        # is the failure mode that actually matters here, so it gates CI.
+        run: |
+          set -euo pipefail
+          fail=0
+
+          echo "== RFC1918 addresses outside documentation placeholders"
+          if grep -rInE '(192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)[0-9]+\.[0-9]+' \
+               --exclude-dir=.git . ; then
+            echo "::error::Private address found. Use 10.0.0.x placeholders in docs."
+            fail=1
+          fi
+
+          echo "== Credential-shaped literals"
+          # tests/ is excluded from this one check only: its fixtures are dummy
+          # values by definition ("TOK"), and they would otherwise mask real
+          # findings by making this job permanently red. Everything else --
+          # private keys, RFC1918, a tracked .env -- is still scanned there.
+          if grep -rInE '(password|passwd|secret|api_?key|token)[[:space:]]*=[[:space:]]*["'"'"'][^"'"'"'${<]' \
+               --include='*.py' --include='*.sh' \
+               --exclude-dir=.git --exclude-dir=tests . ; then
+            echo "::error::Hardcoded credential-shaped literal found."
+            fail=1
+          fi
+
+          echo "== Private keys"
+          if grep -rIn 'BEGIN [A-Z ]*PRIVATE KEY' --exclude-dir=.git . ; then
+            echo "::error::Private key material found."
+            fail=1
+          fi
+
+          echo "== A committed .env"
+          if git ls-files | grep -qE '(^|/)\.env$'; then
+            echo "::error::.env is tracked. It must stay gitignored."
+            fail=1
+          fi
+
+          if [ "$fail" -eq 0 ]; then echo "Clean."; fi
+          exit "$fail"

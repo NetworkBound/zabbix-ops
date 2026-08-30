@@ -1,0 +1,123 @@
+# Scheduled drift check against the live estate.
+#
+# This job MUST run on a self-hosted runner. The Zabbix and Proxmox APIs are on
+# a private network; a hosted runner has no route to them and the job would fail
+# on every schedule. See docs/runners.md for provisioning one.
+#
+# What it catches is the failure mode monitoring cannot catch itself: a guest
+# changes address, or is created with a 0.0.0.0 interface, and Zabbix carries on
+# polling nothing. The resulting "unreachable" alert is indistinguishable from a
+# real outage, so it gets investigated once and ignored thereafter.
+name: Monitoring drift
+
+on:
+  schedule:
+    # 07:15 UTC daily. Deliberately not on the hour — scheduled runners cluster
+    # there and get queued.
+    - cron: "15 7 * * *"
+  workflow_dispatch:
+    inputs:
+      fail_on:
+        description: "Findings that should fail the run"
+        required: false
+        default: "no_address drift"
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    name: Proxmox vs Zabbix
+    # Override with the SELF_HOSTED_LABEL repo variable if your runner uses a
+    # different label. Gitea runners commonly register as "host" or "ubuntu-latest".
+    runs-on: ${{ vars.SELF_HOSTED_LABEL || 'self-hosted' }}
+    timeout-minutes: 15
+
+    env:
+      ZBX_URL: ${{ secrets.ZBX_URL }}
+      ZBX_TOKEN: ${{ secrets.ZBX_TOKEN }}
+      PVE_0_NAME: ${{ vars.PVE_0_NAME }}
+      PVE_0_URL: ${{ secrets.PVE_0_URL }}
+      PVE_0_TOKEN: ${{ secrets.PVE_0_TOKEN }}
+      PVE_1_NAME: ${{ vars.PVE_1_NAME }}
+      PVE_1_URL: ${{ secrets.PVE_1_URL }}
+      PVE_1_TOKEN: ${{ secrets.PVE_1_TOKEN }}
+      EXCLUDE_GROUPS: ${{ vars.EXCLUDE_GROUPS }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required configuration is present
+        # Fail loudly and immediately rather than producing an empty, clean-looking
+        # report because a secret was never set.
+        run: |
+          set -eu
+          missing=""
+          [ -n "${ZBX_URL:-}" ]     || missing="$missing ZBX_URL"
+          [ -n "${ZBX_TOKEN:-}" ]   || missing="$missing ZBX_TOKEN"
+          [ -n "${PVE_0_URL:-}" ]   || missing="$missing PVE_0_URL"
+          [ -n "${PVE_0_TOKEN:-}" ] || missing="$missing PVE_0_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing required secrets/variables:$missing"
+            exit 1
+          fi
+          echo "Configuration present."
+
+      - name: Connectivity
+        run: python3 scripts/zbx.py
+
+      - name: Reconcile
+        id: reconcile
+        run: |
+          set -o pipefail
+          # shellcheck disable=SC2086  # word splitting is intended for the group list
+          python3 scripts/reconcile.py --exclude-group $EXCLUDE_GROUPS \
+            | tee reconcile.txt
+          python3 scripts/reconcile.py --exclude-group $EXCLUDE_GROUPS --json \
+            > reconcile.json
+
+      - name: DNS drift
+        continue-on-error: true
+        run: python3 scripts/inventory.py --check-dns --only-problems | tee dns.txt
+
+      - name: Stale problems
+        continue-on-error: true
+        run: python3 scripts/problems.py --min-severity 4 list | tee problems.txt
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Monitoring drift"
+            echo
+            echo '```'
+            cat reconcile.txt 2>/dev/null || echo "(reconcile did not run)"
+            echo '```'
+            echo
+            echo "<details><summary>DNS findings</summary>"
+            echo
+            echo '```'
+            cat dns.txt 2>/dev/null || echo "(skipped)"
+            echo '```'
+            echo "</details>"
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-report
+          path: |
+            reconcile.txt
+            reconcile.json
+            dns.txt
+            problems.txt
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Fail on findings
+        run: |
+          # shellcheck disable=SC2086
+          python3 scripts/reconcile.py --exclude-group $EXCLUDE_GROUPS \
+            --fail-on ${{ github.event.inputs.fail_on || 'no_address drift' }} \
+            > /dev/null
