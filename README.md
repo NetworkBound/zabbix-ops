@@ -267,6 +267,41 @@ Answers three questions that quietly rot in any long-running estate: does the
 monitored name resolve, does it resolve to the address Zabbix is polling, and
 does that address reverse-resolve to the same name.
 
+### `walk2tmpl.py` — build an SNMP template from a device
+
+```bash
+snmpwalk -v2c -c public -On 10.0.0.5 1.3.6.1.2.1 > device.walk
+./scripts/walk2tmpl.py device.walk --name "My Switch by SNMP" -o template.json
+./scripts/tmpltest.py run template.json --against 10.0.0.5 \
+    --macro '{$SNMP_COMMUNITY}=public'
+```
+
+The canonical MIB-to-Zabbix tool emits Zabbix 3.x XML and nothing has replaced
+it. Generating from a MIB is also the wrong starting point: most of a vendor MIB
+is not implemented on any given device, so you get thousands of items that will
+sit unsupported forever and someone has to prune them by hand.
+
+A walk contains exactly what the device answers, so everything generated from it
+is known to work on that hardware.
+
+It produces the modern structure rather than one item per OID:
+
+- One `snmp.walk[...]` master item per subtree and per table. The device is
+  polled once and the result split locally.
+- Dependent items with `SNMP_WALK_VALUE` preprocessing.
+- A discovery rule per detected table, dependent on that table's master, with
+  item prototypes underneath.
+- Counters get change-per-second preprocessing, since a raw counter is not what
+  anyone alerts on.
+
+Everything ships **disabled**. A generated template is a starting point, not a
+finished one.
+
+On a 24-port switch: 579 walked OIDs became 7 scalar items, 3 walk masters and
+one discovery rule with 22 prototypes — not 579 items. Verified end to end
+against the device: the template imported, discovery ran, and produced items
+named after the actual ports.
+
 ### `zbx.py` — Zabbix 7.x API client
 
 The shared library the other tools use.

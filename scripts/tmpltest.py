@@ -180,10 +180,18 @@ def test_template(z, path: pathlib.Path, args, groupid: str) -> Result:
             entry["details"] = {"version": 2, "community": "{$SNMP_COMMUNITY}"}
         iface.append(entry)
     try:
+        macros = []
+        for spec in args.macro:
+            if "=" not in spec:
+                print(f"    ! ignoring malformed --macro {spec!r}", file=sys.stderr)
+                continue
+            k, v = spec.split("=", 1)
+            macros.append({"macro": k.strip(), "value": v})
         hostid = z.call("host.create", {
             "host": hostname, "groups": [{"groupid": groupid}],
             "templates": [{"templateid": t} for t in tids],
             "interfaces": iface, "status": 0 if args.against else 1,
+            **({"macros": macros} if macros else {}),
         })["hostids"][0]
     except ZabbixError as e:
         r.check("template links to a host", False, str(e)[:160])
@@ -192,7 +200,8 @@ def test_template(z, path: pathlib.Path, args, groupid: str) -> Result:
 
     try:
         items = z.call("item.get", {"hostids": hostid,
-                                    "output": ["itemid", "key_", "state", "error"]})
+                                    "output": ["itemid", "key_", "state", "error",
+                                               "status"]})
         r.check(f"items created ({len(items)})", bool(items),
                 "template produced no items")
 
@@ -206,17 +215,34 @@ def test_template(z, path: pathlib.Path, args, groupid: str) -> Result:
         # Only meaningful when pointed at something real; a disabled host never
         # polls, so every item would sit in the unknown state forever.
         if args.against:
+            # A disabled item can neither collect nor go unsupported, so both
+            # checks below would pass vacuously. Generated templates ship
+            # disabled on purpose, so enable them on the throwaway host for the
+            # duration of the test.
+            disabled = [i["itemid"] for i in items if i.get("status") == "1"]
+            if disabled:
+                for n in range(0, len(disabled), 100):
+                    z.call("item.update", [{"itemid": i, "status": 0}
+                                           for i in disabled[n:n + 100]])
+                print(f"    enabled {len(disabled)} disabled item(s) for the test")
             print(f"    settling {args.settle}s against {args.against} …")
             time.sleep(args.settle)
             items = z.call("item.get", {"hostids": hostid,
-                                        "output": ["itemid", "key_", "state", "error"]})
+                                        "output": ["itemid", "key_", "state",
+                                                   "error", "lastclock"]})
             unsupported = [i for i in items if i.get("state") == "1"]
             r.check(f"no unsupported items ({len(items)} checked)",
                     not unsupported,
                     "; ".join(f"{i['key_']}: {(i.get('error') or '')[:60]}"
                               for i in unsupported[:5]))
-            collected = [i for i in items if i.get("state") == "0"]
-            r.check("at least one item collected a value", bool(collected))
+            # A real value, not merely "not unsupported" -- an item that has
+            # never been polled also reports state 0.
+            collected = [i for i in items
+                         if i.get("lastclock") and i["lastclock"] != "0"]
+            r.check(f"items returned a value ({len(collected)} of {len(items)})",
+                    bool(collected),
+                    "nothing was collected; the device may be unreachable from "
+                    "this server, or every item is still pending")
     finally:
         if not args.keep:
             try:
@@ -267,6 +293,11 @@ def main() -> int:
     p.add_argument("files", nargs="+")
     p.add_argument("--against", metavar="IP",
                    help="a real address to poll, so unsupported items can be detected")
+    p.add_argument("--macro", action="append", default=[], metavar="NAME=VALUE",
+                   help="host macro for the test host, e.g. "
+                        "--macro '{$SNMP_COMMUNITY}=private'. Repeatable. "
+                        "A template's default macro rarely matches the device "
+                        "you are testing against.")
     p.add_argument("--settle", type=int, default=90,
                    help="seconds to wait for values before checking state")
     p.add_argument("--keep", action="store_true", help="leave the test host behind")

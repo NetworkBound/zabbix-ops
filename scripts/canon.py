@@ -93,6 +93,12 @@ SORT_KEYS: dict[str, tuple[str, ...]] = {
 ORDER_SIGNIFICANT = frozenset({
     "preprocessing", "steps", "pages", "widgets", "fields", "overrides",
     "operations", "filters", "conditions",
+    # A preprocessing step's parameters are positional: for SNMP_WALK_TO_JSON
+    # they are (macro, oid, format) triplets, and reordering them changes what
+    # the step does. The same key is also used for script item parameters,
+    # which are name/value objects and would be safe to sort -- the scalar-list
+    # rule below distinguishes them.
+    "parameters", "params",
 })
 
 
@@ -122,6 +128,11 @@ def canonicalise(node, name: str = ""):
     if isinstance(node, list):
         items = [canonicalise(v, name) for v in node]
         if name in ORDER_SIGNIFICANT:
+            return items
+        # A list of scalars is almost always positional — arguments, an ordered
+        # sequence of values — and has no identity to sort by. Sorting one
+        # silently changes meaning, so scalar lists are never reordered.
+        if any(not isinstance(v, dict) for v in items):
             return items
         return sorted(items, key=lambda o: _sort_key(name, o))
     return node
