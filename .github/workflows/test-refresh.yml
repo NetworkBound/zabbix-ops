@@ -28,7 +28,7 @@ jobs:
       ZBX_TEST_URL: ${{ secrets.ZBX_TEST_URL }}
       ZBX_TEST_TOKEN: ${{ secrets.ZBX_TEST_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Check configuration is present
         run: |
@@ -76,7 +76,7 @@ jobs:
 
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: clone-report
           path: |
@@ -94,7 +94,7 @@ jobs:
       ZBX_TOKEN: ${{ secrets.ZBX_TOKEN }}
       PGDSN: ${{ secrets.PGDSN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Report
         run: python3 scripts/ha.py | tee ha.txt
       - name: Gate

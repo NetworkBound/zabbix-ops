@@ -45,7 +45,7 @@ jobs:
       EXCLUDE_GROUPS: ${{ vars.EXCLUDE_GROUPS }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Check required configuration is present
         # Fail loudly and immediately rather than producing an empty, clean-looking
@@ -104,7 +104,7 @@ jobs:
 
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: drift-report
           path: |
