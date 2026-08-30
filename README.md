@@ -225,6 +225,37 @@ Every `close` is a dry run until `--apply`. Problems whose trigger has
 `manual_close` disabled are reported as skipped rather than counted as closed,
 because Zabbix will not close them and reporting otherwise hides work.
 
+### `tmpltest.py` — test a template before it ships
+
+```bash
+./scripts/tmpltest.py run templates/*.json
+./scripts/tmpltest.py run templates/linux.json --against 10.0.0.55
+```
+
+There is no established way to test a Zabbix template. The frontend has item and
+trigger test buttons, and people mirror trigger expressions into calculated
+items to watch them evaluate — all manual, all after the fact.
+
+This imports the template into a disposable instance, attaches it to a throwaway
+host, and asserts:
+
+| Check | Catches |
+|---|---|
+| The template imports | Trigger expressions naming items that do not exist, malformed keys, broken preprocessing — Zabbix validates references on import |
+| It links to a host | Missing interface types, conflicting keys |
+| Items are created | A template that imports but produces nothing |
+| Trigger expressions resolve | Triggers whose functions reference nothing |
+| Discovery rules have prototypes | A rule that will discover nothing |
+| Nothing goes unsupported | A wrong OID, a bad key parameter, a macro that never resolves — needs `--against` a real address |
+
+The host is removed afterwards. Refuses to run anywhere not marked `{$ENV}`
+non-production, since it creates and deletes hosts.
+
+The interface types are derived from the template's own item types, because a
+template can only link to a host carrying the interfaces its items need — and
+the resulting error reads like a broken template rather than a missing
+interface.
+
 ### `inventory.py` — export and DNS audit
 
 ```bash
