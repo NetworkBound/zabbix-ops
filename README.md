@@ -153,6 +153,66 @@ sufficient on its own:
 
 Full build and failover procedure: [ha.md](docs/ha.md).
 
+### `canon.py` — make exports diffable
+
+```bash
+./scripts/canon.py export -o templates/         # Zabbix -> canonical files
+./scripts/canon.py normalise export.json
+./scripts/canon.py diff old.json new.json
+```
+
+A Zabbix export cannot be usefully diffed as it comes. The version header
+changes on every server upgrade, list ordering is not consistent between
+servers, and default emission has shifted between versions — so a one-line
+change produces a diff nobody can review, and version-controlling configuration
+gets abandoned.
+
+Canonical form removes the version header, sorts every list whose order is not
+semantically meaningful by a stable key, leaves alone the ones where order *is*
+meaningful (preprocessing steps, dashboard layout, LLD overrides), and drops
+empty values. UUIDs are untouched: import matches on UUID first, so changing
+them turns an update into a duplicate.
+
+Measured on a real template exported from two servers on different patch
+versions: 92 changed lines by line diff, 46 actual changes semantically, and
+none of them spurious.
+
+The diff classifies every change as additive, mutating or destructive, and knows
+which removals lose data:
+
+```
+DESTRUCTIVE  (2)
+  templates[Linux by Agent].items[agent.ping]
+    !! deletes the item and all of its collected history
+```
+
+Works in JSON rather than YAML — Zabbix handles both, and the standard library
+parses one of them.
+
+### `promote.py` — git as the source of truth
+
+```bash
+./scripts/promote.py plan  templates/*.json
+./scripts/promote.py apply templates/*.json
+./scripts/promote.py drift templates/*.json
+```
+
+`plan` diffs each file against what the target currently holds. `apply` imports
+them, refusing anything destructive unless explicitly allowed. `drift` runs the
+comparison in reverse and reports where the server has been edited outside git,
+which is what happens during an incident.
+
+> `configuration.importcompare` is not usable as a gate. It compares host groups
+> and templates only, validates nothing semantic, and returns different results
+> depending on the caller's permissions. In this project it reported no changes
+> for an import that then failed outright because a referenced object was
+> missing from the target.
+
+`.github/workflows/promote.yml` wires this to pull requests: the plan is posted
+as the job summary so a reviewer sees the exact change before approving,
+destructive changes block a PR, and after applying it re-plans to confirm the
+server converged on the files.
+
 ### `problems.py` — bulk triage
 
 ```bash

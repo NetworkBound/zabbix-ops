@@ -1,0 +1,110 @@
+# Template promotion: git is the source of truth, the plan is the review.
+#
+# On a pull request the plan is computed and posted as the job summary, so a
+# reviewer sees exactly what would change on production before approving. On
+# merge the same files are applied.
+#
+# Self-hosted only. Both steps talk to a Zabbix API on a private network.
+name: Promote templates
+
+on:
+  pull_request:
+    paths: ["templates/**.json"]
+  push:
+    branches: [main]
+    paths: ["templates/**.json"]
+  workflow_dispatch:
+    inputs:
+      allow_destructive:
+        description: "Permit removals, including item history loss"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Plan against production
+    runs-on: ${{ vars.SELF_HOSTED_LABEL || 'self-hosted' }}
+    timeout-minutes: 15
+    env:
+      ZBX_URL: ${{ secrets.ZBX_URL }}
+      ZBX_TOKEN: ${{ secrets.ZBX_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Files are in canonical form
+        # A file that is not canonical produces a noisy plan and an unreviewable
+        # diff. Fail early and tell the author how to fix it.
+        run: |
+          set -eu
+          fail=0
+          for f in templates/*.json; do
+            [ -e "$f" ] || continue
+            if ! python3 scripts/canon.py normalise "$f" | diff -q - "$f" >/dev/null; then
+              echo "::error file=$f::not canonical — run: python3 scripts/canon.py normalise --in-place $f"
+              fail=1
+            fi
+          done
+          exit "$fail"
+
+      - name: Plan
+        run: |
+          set -o pipefail
+          python3 scripts/promote.py plan templates/*.json | tee plan.txt
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Promotion plan"
+            echo
+            echo '```'
+            cat plan.txt 2>/dev/null || echo "(plan did not run)"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+
+      - name: Block destructive changes on a pull request
+        # Removals are allowed, but not silently: they need the manual
+        # workflow_dispatch with allow_destructive set, so the decision is
+        # recorded against a person rather than a merge.
+        if: github.event_name == 'pull_request'
+        run: python3 scripts/promote.py plan templates/*.json --fail-on-destructive
+
+  apply:
+    name: Apply to production
+    if: github.event_name != 'pull_request'
+    needs: plan
+    runs-on: ${{ vars.SELF_HOSTED_LABEL || 'self-hosted' }}
+    timeout-minutes: 20
+    environment: production
+    env:
+      ZBX_URL: ${{ secrets.ZBX_URL }}
+      ZBX_TOKEN: ${{ secrets.ZBX_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Apply
+        run: |
+          python3 scripts/promote.py apply templates/*.json \
+            ${{ inputs.allow_destructive && '--allow-destructive' || '' }}
+      - name: Confirm convergence
+        # Re-planning after a successful apply must report no change. If it does
+        # not, the import silently did something other than what was planned.
+        run: |
+          set -o pipefail
+          python3 scripts/promote.py plan templates/*.json | tee after.txt
+          grep -q "0 additive, 0 mutating, 0 destructive" after.txt || {
+            echo "::error::server does not match the files after apply"; exit 1; }
+
+  drift:
+    name: Detect drift
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ${{ vars.SELF_HOSTED_LABEL || 'self-hosted' }}
+    env:
+      ZBX_URL: ${{ secrets.ZBX_URL }}
+      ZBX_TOKEN: ${{ secrets.ZBX_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Has production been edited outside git?
+        run: python3 scripts/promote.py drift templates/*.json
