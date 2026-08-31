@@ -52,6 +52,8 @@ start using the commands that write:
 | `templates.py import`, `promote.py apply` | Templates |
 | `problems.py close --apply` | Problem acknowledgement |
 | `fix.py ... --apply` | Hosts, interfaces, triggers, maintenance |
+| `unsupported.py disable --apply` | Items |
+| `notify.py test/verify --apply` | Nothing, but it sends real messages to real people |
 | `tmpltest.py`, `clone.py` | Host create and delete on the test instance |
 
 Everything else only reads.
@@ -129,6 +131,22 @@ To run one category, or to gate a scheduled job:
 python3 scripts/audit.py --only suppression
 python3 scripts/audit.py --fail-on high
 ```
+
+Three tools go deeper than the audit does, and are worth running once each after
+it. All three are read-only in the form shown here:
+
+```bash
+python3 scripts/notify.py history        # what the alert log says was delivered
+python3 scripts/notify.py users          # who can actually be reached
+python3 scripts/unsupported.py list      # items that stopped collecting, grouped by cause
+python3 scripts/triggerlint.py check     # triggers that read correctly and are wrong
+```
+
+`notify.py history` is the one that surprises people. An installation can be
+configured perfectly — action enabled, user has media, media type enabled — and
+still deliver nothing, because a webhook was revoked at the far end or a relay
+started requiring authentication. The alert log holds the answer and nothing in
+the frontend surfaces it.
 
 ## 6. Optional: compare against Proxmox
 

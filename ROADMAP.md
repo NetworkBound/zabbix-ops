@@ -206,12 +206,13 @@ Ordered by impact, not by ease.
 | 6 | Service-layer templates for carrier equipment | Vendor templates stop at chassis and interfaces. Service state, queue and policer counters, and OAM sessions are absent everywhere. |
 
 Delivered so far: inventory reconciliation, production-readiness auditing and
-remediation, bulk problem triage, DNS auditing, safety-gated production to test
-cloning, export canonicalisation, semantic diff with destructive-change gating,
-a promotion pipeline that plans on review and confirms convergence after
-applying, template testing, SNMP template generation from a device walk,
-two-node HA with a floating address that follows the active node, and agent
-rollout.
+remediation, notification delivery verification, unsupported-item triage,
+trigger expression linting, agent fleet auditing, bulk problem triage, DNS
+auditing, safety-gated production to test cloning, export canonicalisation,
+semantic diff with destructive-change gating, a promotion pipeline that plans on
+review and confirms convergence after applying, template testing, SNMP template
+generation from a device walk, two-node HA with a floating address that follows
+the active node, and agent rollout.
 
 ## Explicitly out of scope
 

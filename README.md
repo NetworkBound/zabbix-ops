@@ -1,7 +1,8 @@
 # zabbix-ops
 
-Operational tooling for Zabbix 7.x: inventory reconciliation, bulk problem
-triage, safe promotion from test to production, and high availability.
+Operational tooling for Zabbix 7.x: auditing whether monitoring is doing what
+you believe it is, reconciling it against inventory, triaging what has quietly
+stopped working, safe promotion from test to production, and high availability.
 
 Standard library only. No dependencies to install, nothing to keep upgraded.
 
@@ -112,6 +113,150 @@ The suppression checks are the next ones worth running. A one-time maintenance
 period whose slot has elapsed still displays as active, so the hosts it names
 are believed to be suppressed while they alert normally — and nothing in the
 frontend indicates this.
+
+### `notify.py` — prove notifications reach somewhere
+
+```bash
+./scripts/notify.py history --days 7    # what the alert log actually says
+./scripts/notify.py users               # who can be reached right now
+./scripts/notify.py verify              # dry run
+./scripts/notify.py verify --apply      # sends one real message per media type
+```
+
+`audit.py --only delivery` tells you something is wrong. This tells you what.
+
+`history` groups the alert log by media type and separates two failure shapes
+that need different responses: a media type that has **never** delivered is
+broken and nothing depending on it is being notified, while one that delivers
+intermittently is usually a rate limit or a flaky relay. Alerts discarded before
+they reached any media type are counted separately, because those are a routing
+fault rather than a delivery one.
+
+`users` answers "if this fires at 3am, who actually gets it". A user is
+unreachable for more than one reason — no media at all, a disabled medium, a
+medium whose severity filter excludes the alert, or one outside its time period
+— and the report names which. It then lists users that an enabled action
+targets but cannot reach, which is the common failure after someone is added to
+a group an action points at.
+
+Two things it will not do. It never requests `output=extend` on media types,
+because that returns SMTP passwords and webhook secrets. And webhook `sendto`
+values are truncated to scheme and host, since chat integrations store the full
+webhook token there and printing it would turn a report into a leak.
+
+`verify` exits non-zero when an enabled media type fails, so a scheduled job can
+gate on it. A media type nothing has been tried through is reported as
+unverified rather than failed — claiming a path is broken on no evidence makes
+the job untrustworthy, and a job people stop believing is worse than no job.
+
+### `unsupported.py` — triage items that stopped collecting
+
+```bash
+./scripts/unsupported.py list                       # grouped by cause
+./scripts/unsupported.py explain                    # what each cause means
+./scripts/unsupported.py list --min-count 10 --fail-over 200
+./scripts/unsupported.py disable --error "No Such Object"          # dry run
+./scripts/unsupported.py disable --error "No Such Object" --apply
+```
+
+An unsupported item is still scheduled. It takes a poller slot on every
+interval, fails, and returns nothing. They accumulate silently: a template
+change, a firmware upgrade or an agent upgrade turns a working key into a
+failing one, the item stops producing values, and the frontend still lists it as
+monitored. Nothing alerts on it, so the count only goes up until someone looks.
+
+The value is the grouping rather than the list. Several hundred unsupported
+items are usually a handful of causes repeated across every host sharing a
+template, and each cause has one fix that clears the whole group. Grouping on
+the raw error text does not achieve this — a failed SNMP walk embeds the entire
+response in its message, so every item produces a unique string. The signature
+keeps the data type and the failure reason and discards the payload, which
+collapses hundreds of items into the two or three real problems behind them.
+
+`disable` refuses to run without a selector, and refuses templated items
+outright: disabling the inherited copy leaves the template still producing it on
+every other host, so the fix belongs on the template. For items created by
+discovery it names the rule and the template that owns it.
+
+### `triggerlint.py` — find triggers that read correctly and are wrong
+
+```bash
+./scripts/triggerlint.py check
+./scripts/triggerlint.py check --min-confidence high
+./scripts/triggerlint.py check --fail-on inverted_sense
+./scripts/triggerlint.py check --json
+```
+
+A trigger that is wrong in an obvious way gets found within a week. The ones
+that survive are the ones that read correctly. A CPU trigger built on the
+**idle** percentage and wrapped in `>85` sits in the list looking like every
+other CPU trigger, and fires when the machine is asleep instead of when it is
+busy.
+
+| Rule | Catches |
+|---|---|
+| `inverted_sense` | The expression measures the opposite of what the name says — idle versus utilisation, free versus used, available versus consumed |
+| `nodata_no_manual_close` | A `nodata()` trigger with manual close disabled. If the host never returns, the problem cannot be cleared by hand |
+| `missing_item` | The referenced item no longer exists, or is disabled or unsupported. The trigger looks configured and can never fire |
+| `hardcoded_threshold` | The name advertises a macro while the expression compares against a literal, so setting the macro on a host does nothing |
+| `severity_mismatch` | Severity contradicts the wording — a trigger named for an outage filed as a warning |
+| `missing_dependency` | A guest trigger with no dependency on its hypervisor, so one host failure produces one alert per guest |
+| `counter_threshold` | A monotonic counter compared against a fixed number, which is true forever once crossed |
+
+Read-only; it never writes to Zabbix. It parses the **stored** expression rather
+than asking the API to expand it, because expansion substitutes user macros
+inside item keys — which breaks item identity and would print credentials such
+as `{$PG.PASSWORD}` into the report.
+
+By default it examines trigger *definitions* only: not inherited copies, not
+discovered triggers, not vendor templates. Those are the ones you can actually
+edit, and it is usually a small fraction of the total.
+
+Findings carry a confidence. `high` means the expression cannot plausibly mean
+what its description says; `medium` has an innocent reading but it is the rarer
+one; `low` is worth a glance. Anything with a defensible alternative reading is
+reported low and explained rather than asserted, because a linter people learn
+to skip is worse than no linter.
+
+### `agentfleet.py` — agent configuration across a Proxmox fleet
+
+```bash
+./scripts/agentfleet.py audit
+./scripts/agentfleet.py audit --json
+./scripts/agentfleet.py audit --fail-on server
+./scripts/agentfleet.py audit --only 100,101
+```
+
+Run this **on** a Proxmox node. Each guest's agent configuration is read through
+`pct exec`, so nothing has to be installed, opened or authenticated inside the
+containers.
+
+Agent configuration drifts from what the server believes, and it drifts
+silently. `Server=` is an allowlist: the agent refuses connections from any
+address not in it. Add a second HA node without updating the fleet and every
+passive check fails the moment the standby takes over — the cluster fails over
+into a blind spot, which is worse than having no HA, because by then you believe
+you are covered.
+
+| Check | Catches |
+|---|---|
+| `hostname` | Agent `Hostname=` not matching the Zabbix host name. Zabbix matches byte-for-byte, so case and suffix differences are reported separately from real mismatches |
+| `server` | A poller address missing from the agent's allowlist |
+| `serveractive` | Active checks pointed somewhere that will not accept them |
+| `version` | Agent versions behind the server, and spread across the fleet |
+| `coverage` | Guests running an agent that Zabbix does not monitor, and the reverse |
+| `tls` | Unencrypted agent traffic, and hosts whose TLS settings disagree with the agent's |
+
+Two details worth knowing. Guests are paired to Zabbix hosts by **address**, not
+name — a container whose Proxmox hostname, agent `Hostname=` and Zabbix host name
+all differ is common, and name matching reports it as both an unmonitored guest
+and an orphaned host when nothing is wrong.
+
+And Zabbix does not record where a proxy polls from: an active proxy's
+`proxy.address` is `127.0.0.1`, so for hosts behind one the allowlist check has
+no address to look for. Pass `--proxy-address NAME=ADDR` to supply it. Failing
+that the tool infers one and labels the finding as inferred, rather than
+reporting a clean result it cannot support.
 
 ### `clone.py` — a test instance that cannot hurt production
 
@@ -388,8 +533,9 @@ Setup, required secrets, and advice on which findings should fail a build:
 python3 -m unittest discover -s tests -v
 ```
 
-41 tests, no network required. Comparison and DNS logic are kept separate from
-I/O so the parts worth testing can be tested anywhere.
+235 tests, no network required. Comparison, parsing and classification logic
+are kept separate from I/O, so the parts worth testing can be tested anywhere —
+including on a machine with no Zabbix server to point at.
 
 ## Direction
 
