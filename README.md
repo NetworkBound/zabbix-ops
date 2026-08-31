@@ -94,13 +94,21 @@ gone wrong in a real installation. Read-only.
 | Category | Answers |
 |---|---|
 | `alerting` | Would a trigger firing now actually reach a person, and does anything escalate if the first notification is missed? |
+| `delivery` | Did notifications actually arrive? Configuration being correct is not the same as delivery working, and nothing in the frontend surfaces the difference. |
 | `suppression` | Is monitoring quietly switched off somewhere — a maintenance window that suppresses nothing, or one that never ends? |
 | `collection` | Is data arriving? Unsupported items, hosts with an unusable interface address. |
 | `noise` | Does the problem list mean anything? Trigger dependencies, week-old problems, untagged hosts. |
 | `security` | Encrypted transport, token expiry, super-admin sprawl. |
 | `capacity` | Proxy version skew, offline proxies, server processes running hot, cache pressure. |
 
-The suppression checks are the ones worth running first. A one-time maintenance
+The `delivery` check is the one to run first. Everything can be configured
+correctly — action enabled, user has media, media type enabled — while every
+send fails because a webhook was revoked at the far end, an SMTP relay started
+requiring authentication, or the host a script posts to moved. The alert history
+holds the answer and almost nobody looks at it, so a silent alerting outage can
+run for weeks with the problem list looking entirely normal.
+
+The suppression checks are the next ones worth running. A one-time maintenance
 period whose slot has elapsed still displays as active, so the hosts it names
 are believed to be suppressed while they alert normally — and nothing in the
 frontend indicates this.

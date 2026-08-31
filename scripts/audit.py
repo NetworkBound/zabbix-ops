@@ -34,7 +34,8 @@ from zbx import ZabbixError, connect_or_exit  # noqa: E402
 
 SEVERITIES = ("high", "medium", "low")
 
-CATEGORIES = ("alerting", "suppression", "collection", "noise", "security", "capacity")
+CATEGORIES = ("alerting", "delivery", "suppression", "collection", "noise",
+              "security", "capacity")
 
 
 class Findings:
@@ -111,6 +112,93 @@ def check_alerting(z, f: Findings) -> None:
               "No enabled trigger actions",
               "Problems will be recorded but nobody will be told about them.",
               count=0)
+
+
+# --------------------------------------------------------------------------
+# Delivery: did notifications actually arrive?
+# --------------------------------------------------------------------------
+def check_delivery(z, f: Findings, days: int = 7) -> None:
+    """Whether Zabbix actually managed to send anything.
+
+    Configuration being correct is not the same as delivery working. An action
+    can be enabled, a user can have media, the media type can be enabled — and
+    every send still fail because a webhook was revoked at the far end, an SMTP
+    relay started requiring authentication, or the host a script posts to moved.
+
+    Nothing in the frontend surfaces this. The alert history holds the answer and
+    almost nobody looks at it, so a silent alerting outage can run for weeks with
+    the problem list looking entirely normal.
+    """
+    since = int(time.time()) - days * 86400
+    try:
+        alerts = z.call("alert.get", {"output": ["clock", "status", "error",
+                                                 "mediatypeid", "userid"],
+                                      "time_from": since, "limit": 50000})
+    except ZabbixError:
+        return
+    if not alerts:
+        f.add("delivery", "medium",
+              "No notifications attempted",
+              f"Zabbix has not tried to send anything in {days} days. Either "
+              "nothing has gone wrong, or nothing is configured to tell anyone.",
+              count=0,
+              fix="Check that an enabled action matches the problems you are "
+                  "getting, and send a test through a media type.")
+        return
+
+    sent = [a for a in alerts if a.get("status") == "1"]
+    failed = [a for a in alerts if a.get("status") == "2"]
+    names = {m["mediatypeid"]: m["name"]
+             for m in z.call("mediatype.get", {"output": ["mediatypeid", "name"]})}
+
+    if failed and not sent:
+        causes = Counter((a.get("error") or "unknown")[:64] for a in failed)
+        f.add("delivery", "high",
+              "Every notification is failing",
+              f"{len(failed)} attempts in {days} days, none delivered. Alerting "
+              "is effectively switched off: problems are recorded and nobody is "
+              "told. The problem list looks normal while this is happening.",
+              count=len(failed),
+              evidence=[f"{c}x  {e}" for e, c in causes.most_common(5)],
+              fix="Work through each cause. A revoked webhook, an SMTP relay "
+                  "that now requires authentication, and a script endpoint that "
+                  "moved all present as ordinary send failures.")
+    elif failed:
+        rate = len(failed) / len(alerts)
+        per_type = Counter(names.get(a["mediatypeid"], a["mediatypeid"])
+                           for a in failed)
+        # A media type that has never once succeeded is broken, not flaky.
+        dead = [n for n in per_type
+                if not any(names.get(a["mediatypeid"]) == n for a in sent)]
+        if dead:
+            f.add("delivery", "high",
+                  "Media types that have never delivered",
+                  "Every attempt through these failed. Anything relying on them "
+                  "is not being notified at all.",
+                  count=len(dead), evidence=sorted(dead),
+                  fix="Send a test through each and read the error.")
+        if rate > 0.2:
+            f.add("delivery", "medium",
+                  "High notification failure rate",
+                  f"{len(failed)} of {len(alerts)} attempts failed over {days} days.",
+                  count=len(failed),
+                  evidence=[f"{c}x  {n}" for n, c in per_type.most_common(4)])
+
+    # "No media defined for user" means an action targets someone who cannot be
+    # reached. The action looks healthy; the notification goes nowhere.
+    nomedia = [a for a in failed if "No media defined" in (a.get("error") or "")]
+    if nomedia:
+        users = {u["userid"]: u["username"]
+                 for u in z.call("user.get", {"output": ["userid", "username"]})}
+        who = sorted({users.get(a.get("userid"), a.get("userid")) for a in nomedia})
+        f.add("delivery", "high",
+              "Actions notifying users who have no media",
+              "The operation resolves to a user with nothing to send to, so the "
+              "notification is discarded. Common after someone is added to a "
+              "group an action targets.",
+              count=len(nomedia), evidence=who[:8],
+              fix="Give each user a media entry, or narrow the action's "
+                  "operation to a group whose members have one.")
 
 
 # --------------------------------------------------------------------------
@@ -388,6 +476,7 @@ def _is_num(s) -> bool:
 
 CHECKS = {
     "alerting": check_alerting,
+    "delivery": check_delivery,
     "suppression": check_suppression,
     "collection": check_collection,
     "noise": check_noise,
