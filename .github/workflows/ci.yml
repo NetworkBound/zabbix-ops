@@ -98,10 +98,12 @@ jobs:
           # values by definition ("TOK"), and they would otherwise mask real
           # findings by making this job permanently red. Everything else --
           # private keys, RFC1918, a tracked .env -- is still scanned there.
-          if grep -rInE '(password|passwd|secret|api_?key|token)[[:space:]]*=[[:space:]]*["'"'"'][^"'"'"'${<]' \
-               --include='*.py' --include='*.sh' \
-               --exclude-dir=.git --exclude-dir=tests . ; then
-            echo "::error::Hardcoded credential-shaped literal found."
+          # A quote-anchored grep for assignments misses a credential passed
+          # as a URL query parameter, where the value follows = directly with
+          # no quote. That is how one reached a public repository here.
+          if ! find . -path ./.git -prune -o -type f -print0 \
+               | xargs -0 python3 .github/secretscan.py ; then
+            echo "::error::Possible credential found. Values above are masked."
             fail=1
           fi
 
