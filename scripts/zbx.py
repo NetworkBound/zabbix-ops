@@ -102,6 +102,10 @@ class Zabbix:
 
     def version(self) -> str:
         # apiinfo.version is the one method that must NOT be authenticated.
+        # connect_or_exit() calls this once and caches it, so scripts that
+        # print the version do not pay for a second round trip.
+        if getattr(self, "_version", None):
+            return self._version
         return self._post({"method": "apiinfo.version", "params": {}}, authed=False)
 
     def count(self, method: str, params=None) -> int:
@@ -111,10 +115,12 @@ class Zabbix:
 
 
 def connect_or_exit() -> Zabbix:
-    """Build a client from the environment, or print a clear error and exit.
+    """Build a client from the environment, verify it, or exit with one line.
 
     Every script in this repo uses this so a misconfigured environment produces
-    one readable line instead of a traceback.
+    a readable message instead of a traceback. Reachability is checked here
+    rather than left to the first real call, because otherwise the traceback
+    surfaces from whichever script the user happened to run first.
     """
     try:
         z = Zabbix.from_env()
@@ -122,6 +128,24 @@ def connect_or_exit() -> Zabbix:
         print(f"error: {e}", file=sys.stderr)
         print("\nCopy .env.example to .env, fill it in, then:", file=sys.stderr)
         print("    set -a; . ./.env; set +a", file=sys.stderr)
+        sys.exit(2)
+
+    # apiinfo.version needs no authentication, so this separates "cannot reach
+    # the server" from "credentials are wrong" -- two problems that look
+    # identical if the first call you make is an authenticated one.
+    try:
+        z._version = z.version()
+    except ZabbixError as e:
+        print(f"error: {e}", file=sys.stderr)
+        msg = str(e)
+        if "HTTP 40" in msg or "HTTP 30" in msg:
+            print("\nZBX_URL must be the full path to api_jsonrpc.php, not the", file=sys.stderr)
+            print("frontend URL. A frontend URL answers with HTML or a redirect,", file=sys.stderr)
+            print("which is what an HTTP 3xx or 4xx here usually means:", file=sys.stderr)
+            print("    ZBX_URL=http://your-server/zabbix/api_jsonrpc.php", file=sys.stderr)
+        else:
+            print("\nCheck that the server is running and reachable from here:", file=sys.stderr)
+            print(f"    curl -sS -o /dev/null -w '%{{http_code}}\\n' {z.url}", file=sys.stderr)
         sys.exit(2)
     return z
 

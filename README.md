@@ -533,7 +533,7 @@ Setup, required secrets, and advice on which findings should fail a build:
 python3 -m unittest discover -s tests -v
 ```
 
-235 tests, no network required. Comparison, parsing and classification logic
+240 tests, no network required. Comparison, parsing and classification logic
 are kept separate from I/O, so the parts worth testing can be tested anywhere —
 including on a machine with no Zabbix server to point at.
 
