@@ -30,8 +30,11 @@ RULES = [
     ("bearer token", re.compile(r'Bearer\s+([A-Za-z0-9._-]{20,})')),
     ("assigned secret",
      re.compile(r'(?:password|passwd|secret|api_?key|token|access_key)\s*[:=]\s*["\']([^"\'\s]{8,})["\']', re.I)),
+    # The (?<![@/]) matters: pinning a GitHub Action by commit SHA is the
+    # recommended practice, and actions/create-github-app-token@<40-hex> puts
+    # the word "token" immediately before a hex string on every such line.
     ("secret named in hex",
-     re.compile(r'(?:token|key|secret|pat|password|auth)\W{0,4}\b([0-9a-f]{40}|[0-9a-f]{64})\b', re.I)),
+     re.compile(r'(?:token|key|secret|pat|password|auth)\W{0,4}(?<![@/])\b([0-9a-f]{40}|[0-9a-f]{64})\b', re.I)),
 ]
 
 PLACEHOLDER = re.compile(
