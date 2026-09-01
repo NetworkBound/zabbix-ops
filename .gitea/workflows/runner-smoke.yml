@@ -1,0 +1,14 @@
+name: Runner smoke test
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+jobs:
+  hello:
+    # A literal label, deliberately. This separates "the runner is broken" from
+    # "Gitea does not resolve vars.* in runs-on", which look identical from the
+    # outside: both leave the job queued forever.
+    runs-on: linux
+    steps:
+      - run: echo "picked up by $(hostname) at $(date -u)"
+      - run: python3 --version || echo "no python3 on the runner host"
