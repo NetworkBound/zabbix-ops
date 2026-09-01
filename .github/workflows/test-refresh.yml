@@ -20,6 +20,13 @@ permissions:
 jobs:
   refresh:
     name: Clone prod -> test
+    # These need a self-hosted runner inside the monitored network: a hosted
+    # runner has no route to a Zabbix API on a management VLAN. A fresh clone
+    # has no such runner, so without this guard the job queues forever and the
+    # repository looks broken. Set the repository variable SELF_HOSTED_LABEL
+    # (Settings -> Secrets and variables -> Actions -> Variables) to the label
+    # your runner advertises. See docs/runners.md.
+    if: vars.SELF_HOSTED_LABEL != ''
     runs-on: ${{ vars.SELF_HOSTED_LABEL || 'self-hosted' }}
     timeout-minutes: 30
     env:
@@ -87,6 +94,13 @@ jobs:
 
   ha:
     name: HA + replication health
+    # These need a self-hosted runner inside the monitored network: a hosted
+    # runner has no route to a Zabbix API on a management VLAN. A fresh clone
+    # has no such runner, so without this guard the job queues forever and the
+    # repository looks broken. Set the repository variable SELF_HOSTED_LABEL
+    # (Settings -> Secrets and variables -> Actions -> Variables) to the label
+    # your runner advertises. See docs/runners.md.
+    if: vars.SELF_HOSTED_LABEL != ''
     runs-on: ${{ vars.SELF_HOSTED_LABEL || 'self-hosted' }}
     timeout-minutes: 10
     env:

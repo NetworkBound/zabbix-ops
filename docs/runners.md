@@ -17,6 +17,24 @@ Both files live in `.github/workflows/`. Gitea Actions reads that directory when
 `.gitea/workflows/` is absent and supports the same syntax, so one set of
 workflows serves GitHub and a self-hosted Gitea equally.
 
+### The self-hosted workflows do nothing until you enable them
+
+`monitoring-drift.yml`, `test-refresh.yml` and `promote.yml` are guarded by
+
+```yaml
+if: vars.SELF_HOSTED_LABEL != ''
+```
+
+and skip while that repository variable is unset. This is deliberate. Without
+the guard, a fresh clone would start firing the scheduled jobs on day one, they
+would sit `queued` forever waiting for a runner that does not exist, and the
+Actions tab would look broken for no reason.
+
+So after registering a runner, set **Settings → Secrets and variables → Actions
+→ Variables → `SELF_HOSTED_LABEL`** to whatever label your runner advertises.
+Until you do, only `ci.yml` runs — which is the correct default, because it is
+the only one that needs nothing but the repository.
+
 ---
 
 ## Option A — self-hosted GitHub Actions runner
@@ -93,7 +111,7 @@ everything else is a **variable**, so it stays readable in logs where that helps
 | `PVE_0_NAME` | variable | `pve1` |
 | `PVE_1_*` | as above | second node, optional |
 | `EXCLUDE_GROUPS` | variable | `Homelab/Network Homelab/Infrastructure` |
-| `SELF_HOSTED_LABEL` | variable | `self-hosted`, `host`, … |
+| `SELF_HOSTED_LABEL` | variable | `self-hosted`, `host`, … — **required**; the self-hosted workflows skip entirely while it is unset |
 
 Use a **read-only** Zabbix API token (Users → API tokens) and a **PVEAuditor**
 Proxmox token. Nothing in the scheduled job writes to either system, so nothing
