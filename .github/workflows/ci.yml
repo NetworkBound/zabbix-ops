@@ -68,6 +68,42 @@ jobs:
       - name: ruff format --check
         run: ruff format --check --diff scripts tests || true
 
+      - name: Workflows have no duplicate keys
+        run: |
+          # PyYAML and most editors accept a duplicate mapping key silently,
+          # keeping the last one. GitHub rejects the whole workflow, which
+          # surfaces as a run with no jobs and no log to read. Adding a second
+          # `if:` to a job that already had one cost a broken run here.
+          python3 - <<'PY'
+          import glob, sys, yaml
+
+          class Strict(yaml.SafeLoader):
+              pass
+
+          def no_dupes(loader, node, deep=False):
+              seen, out = set(), {}
+              for k, v in node.value:
+                  key = loader.construct_object(k, deep=deep)
+                  if key in seen:
+                      raise yaml.constructor.ConstructorError(
+                          None, None, f"duplicate key {key!r}", k.start_mark)
+                  seen.add(key)
+                  out[key] = loader.construct_object(v, deep=deep)
+              return out
+
+          Strict.add_constructor(
+              yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, no_dupes)
+
+          bad = 0
+          for f in sorted(glob.glob(".github/workflows/*.yml")):
+              try:
+                  yaml.load(open(f), Strict)
+              except Exception as e:
+                  print(f"::error file={f}::{e}")
+                  bad = 1
+          sys.exit(bad)
+          PY
+
       - name: Shell scripts
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
